@@ -2047,6 +2047,7 @@ Examples: [artifact-create.ts](examples/artifact-create.ts) | [artifact-create-s
 - `options: CreateArtifactOptions`
   - `title?: string` - Artifact title (optional)
   - `instructions?: string` - Instructions for generation (optional)
+  - `slideDesignTemplate?: string` - Slide design template text (SLIDE_DECK only, optional)
   - `sourceIds?: string[]` - Source IDs to use (optional - automatically uses all sources if omitted)
   - `customization?: object` - Type-specific customization options (optional)
 
@@ -2119,6 +2120,9 @@ customization: {
 | `length` | `1`, `2` | **1** = Short (5-10 slides), **2** = Default (10-15 slides) | `2` |
 | `language` | `string` | Language code (e.g., `'en'`, `'hi'`, `'es'`). Use `NotebookLMLanguage` enum for type safety. Supports 80+ languages. | `'en'` |
 
+Additional slide-only option in `CreateArtifactOptions`:
+- `slideDesignTemplate?: string` - Structured design template text. When present, SDK merges instructions in fixed order: language lock -> `instructions` -> `slideDesignTemplate`.
+
 **Example:**
 ```typescript
 customization: {
@@ -2126,6 +2130,12 @@ customization: {
   length: 2, // Default (10-15 slides)
   language: NotebookLMLanguage.ENGLISH,
 }
+
+slideDesignTemplate: JSON.stringify({
+  design_rules: {
+    color: { background: '#FFFDF8', accent: '#F5A3B6' },
+  },
+})
 ```
 
 </details>
@@ -2327,6 +2337,20 @@ const video = await sdk.artifacts.video.create('notebook-id', {
     format: 1,
     visualStyle: 0,
     language: 'en',
+  },
+})
+
+const slides = await sdk.artifacts.slide.create('notebook-id', {
+  instructions: 'Focus on today highlights and tomorrow priorities',
+  slideDesignTemplate: JSON.stringify({
+    design_rules: {
+      meta: { style_name: 'Shojo manga soft pastel' },
+    },
+  }),
+  customization: {
+    language: 'ja',
+    format: 2,
+    length: 2,
   },
 })
 

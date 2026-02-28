@@ -143,6 +143,7 @@ export interface VideoCustomization {
 export interface CreateArtifactOptions {
   title?: string;
   instructions?: string;
+  slideDesignTemplate?: string;
   sourceIds?: string[];
   customization?: QuizCustomization | FlashcardCustomization | SlideDeckCustomization | InfographicCustomization | AudioCustomization | VideoCustomization;
 }
@@ -1828,7 +1829,7 @@ export class ArtifactsService {
     artifactType: ArtifactType,
     options: CreateArtifactOptions
   ): Promise<Artifact> {
-    const { instructions = '', sourceIds = [], customization } = options;
+    const { instructions = '', slideDesignTemplate, sourceIds = [], customization } = options;
     const apiType = this.getApiTypeNumber(artifactType);
     
     // Format source IDs as nested arrays: [[[sourceId1]], [[sourceId2]]]
@@ -1967,12 +1968,18 @@ export class ArtifactsService {
       // Structure from mm4.txt and mm6.txt: [[null,"en",2,3]] or [["something something","en",2,3]]
       // Always set customization array, even if no customization object provided
       const slideCustom = customization as SlideDeckCustomization | undefined;
+      const effectiveSlideLanguage = slideCustom?.language || defaultLanguage;
       const format = slideCustom?.format ?? 2; // 2=Presenter, 3=Detailed deck
       const length = slideCustom?.length ?? 2; // 1=Short (5-10 slides), 2=Default (10-15 slides)
+      const slideInstructions = this.buildSlideInstructions(
+        instructions,
+        slideDesignTemplate,
+        effectiveSlideLanguage
+      );
       
       (args[2] as any[])[13] = [[
-        instructions || null, // Description/instructions
-        slideCustom?.language || defaultLanguage, // Language (default: notebook's default language)
+        slideInstructions, // Description/instructions
+        effectiveSlideLanguage, // Language (default: notebook's default language)
         format, // Format (2=presenter, 3=detailed deck)
         length, // Length (1=Short, 2=Default)
       ]];
@@ -2159,6 +2166,31 @@ export class ArtifactsService {
     );
     
     return this.parseArtifactResponse(response);
+  }
+
+  private buildSlideInstructions(
+    instructions: string,
+    slideDesignTemplate: string | undefined,
+    language: string
+  ): string | null {
+    const baseInstructions = instructions.trim();
+    const designTemplate = slideDesignTemplate?.trim();
+    if (!designTemplate) {
+      return baseInstructions || null;
+    }
+
+    const languageLock = [
+      'Output language requirements:',
+      `- All slide text must be in ${language}.`,
+      '- Keep titles and bullets in the selected language unless quoting proper nouns.',
+    ].join('\n');
+
+    const mergedParts = [languageLock];
+    if (baseInstructions) {
+      mergedParts.push(baseInstructions);
+    }
+    mergedParts.push(`Design template (must follow):\n${designTemplate}`);
+    return mergedParts.join('\n\n');
   }
   
   /**

@@ -218,6 +218,15 @@ export interface CreateArtifactOptions {
   
   /** Custom instructions */
   instructions?: string;
+
+  /**
+   * Slide design template text (SLIDE_DECK only).
+   *
+   * When provided for `ArtifactType.SLIDE_DECK`, this template is appended to
+   * the slide instructions using a deterministic merge order:
+   * 1) language lock, 2) `instructions`, 3) `slideDesignTemplate`.
+   */
+  slideDesignTemplate?: string;
   
   /** 
    * Source IDs to use for artifact generation
@@ -299,4 +308,3 @@ export interface VideoArtifact extends Artifact {
   videoData: string; // URL or base64 encoded video data
   status?: string;
 }
-
