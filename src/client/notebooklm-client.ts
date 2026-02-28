@@ -13,7 +13,7 @@ import { NotebookLanguageService } from '../services/notebook-language.js';
 import { AutoRefreshManager, defaultAutoRefreshConfig } from '../auth/refresh.js';
 import { getCredentials, type Credentials } from '../auth/auth.js';
 import { QuotaManager } from '../utils/quota.js';
-import type { NotebookLMConfig } from '../types/common.js';
+import type { NotebookLMConfig, TransportLocaleSettings } from '../types/common.js';
 
 /**
  * NotebookLM Client
@@ -318,6 +318,7 @@ export class NotebookLMClient {
       cookies: credentials.cookies,
       debug: this.config.debug,
       authUser: this.config.authUser,
+      locale: this.config.locale,
       headers: this.config.headers,
       urlParams: this.config.urlParams,
       maxRetries: this.config.maxRetries,
@@ -401,6 +402,17 @@ export class NotebookLMClient {
    */
   async getRPCClient(): Promise<RPCClient> {
     return this.getRPCClientInternal();
+  }
+
+  /**
+   * Get resolved locale transport settings used by the RPC layer.
+   *
+   * This exposes the effective locale evidence (`hl`, `Accept-Language`)
+   * after defaults and user overrides are applied.
+   */
+  async getTransportLocaleSettings(): Promise<TransportLocaleSettings> {
+    const rpc = await this.getRPCClientInternal();
+    return rpc.getTransportLocaleSettings();
   }
   
   /**
@@ -588,4 +600,3 @@ export function createNotebookLMClient(config?: Partial<NotebookLMConfig>): Note
     ...config,
   });
 }
-

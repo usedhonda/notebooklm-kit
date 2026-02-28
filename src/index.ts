@@ -39,6 +39,7 @@ export type { InfographicImageData, FetchInfographicOptions } from './services/a
 // Types
 export type {
   NotebookLMConfig,
+  TransportLocaleSettings,
   RPCCall,
   RPCResponse,
   BatchExecuteConfig,
@@ -201,4 +202,3 @@ export {
   PLAN_LIMITS,
 } from './utils/quota.js';
 export type { UsageData, NotebookLMPlan, PlanLimits } from './utils/quota.js';
-

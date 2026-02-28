@@ -3728,6 +3728,11 @@ const spanishInfographic = await sdk.artifacts.create('notebook-id', ArtifactTyp
 const sdk = new NotebookLMClient({
   authToken: process.env.NOTEBOOKLM_AUTH_TOKEN!,
   cookies: process.env.NOTEBOOKLM_COOKIES!,
+
+  // Locale strategy:
+  // - 'auto' (default): NOTEBOOKLM_LOCALE -> LC_ALL/LC_MESSAGES/LANG -> en-US
+  // - explicit: 'ja-JP', 'en-US', ...
+  locale: 'auto',
   
   // Enable debug logging
   debug: true,
@@ -3752,6 +3757,16 @@ await sdk.refreshCredentials()
 
 // Get RPC client
 const rpcClient = sdk.getRPCClient()
+
+// Get resolved transport locale evidence
+const locale = await sdk.getTransportLocaleSettings()
+console.log(locale)
+// {
+//   effectiveLocale: 'ja-JP',
+//   localeSource: 'env',
+//   hl: 'ja',
+//   acceptLanguage: 'ja-JP,ja;q=0.9,en-US;q=0.6,en;q=0.5'
+// }
 ```
 
 ## Error Handling
