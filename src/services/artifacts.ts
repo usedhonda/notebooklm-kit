@@ -117,7 +117,24 @@ export interface FlashcardCustomization {
 export interface SlideDeckCustomization {
   format?: 2 | 3;
   language?: string;
-  length?: 1 | 2 | 3;
+  length?: 1 | 2;
+  description?: string;
+  summary?: string;
+  audience?: string;
+  targetAudience?: string;
+  presentationGoal?: string;
+  style?: string;
+  tone?: string;
+  speakerNotesStyle?: 'none' | 'concise' | 'detailed';
+  sections?: Array<{
+    title: string;
+    objective?: string;
+    keyPoints?: string[];
+    visualDirection?: string;
+  }>;
+  mustInclude?: string[];
+  points?: string[];
+  mustAvoid?: string[];
 }
 
 export interface InfographicCustomization {
@@ -140,12 +157,18 @@ export interface VideoCustomization {
   customStyleDescription?: string;
 }
 
+export interface DataTableCustomization {
+  language?: string;
+  userSteeringPrompt?: string;
+  detailLevel?: 1 | 2 | 3;
+}
+
 export interface CreateArtifactOptions {
   title?: string;
   instructions?: string;
   slideDesignTemplate?: string;
   sourceIds?: string[];
-  customization?: QuizCustomization | FlashcardCustomization | SlideDeckCustomization | InfographicCustomization | AudioCustomization | VideoCustomization;
+  customization?: QuizCustomization | FlashcardCustomization | SlideDeckCustomization | InfographicCustomization | AudioCustomization | VideoCustomization | DataTableCustomization;
 }
 
 export interface QuizQuestion {
@@ -209,8 +232,8 @@ export interface DownloadSlidesOptions {
 }
 
 export interface GetSlideOptions {
-  /** Download format: 'pdf' (default) or 'png' */
-  downloadAs?: 'pdf' | 'png';
+  /** Download format: 'pdf' (default), 'png', or 'pptx' */
+  downloadAs?: 'pdf' | 'png' | 'pptx';
   /** Output directory path (required for slides) */
   outputPath: string;
 }
@@ -331,6 +354,14 @@ class SlideService {
   }
 }
 
+class DataTableService {
+  constructor(private artifactsService: ArtifactsService) {}
+
+  async create(notebookId: string, options: CreateArtifactOptions = {}): Promise<Artifact> {
+    return this.artifactsService.create(notebookId, ArtifactType.DATA_TABLE, options);
+  }
+}
+
 export class ArtifactsService {
   public readonly video: VideoService;
   public readonly audio: AudioService;
@@ -340,6 +371,7 @@ export class ArtifactsService {
   public readonly flashcard: FlashcardService;
   public readonly quiz: QuizService;
   public readonly slide: SlideService;
+  public readonly datatable: DataTableService;
   
   private notebookLanguageService: NotebookLanguageService;
   
@@ -355,6 +387,7 @@ export class ArtifactsService {
     this.flashcard = new FlashcardService(this);
     this.quiz = new QuizService(this);
     this.slide = new SlideService(this);
+    this.datatable = new DataTableService(this);
     this.notebookLanguageService = new NotebookLanguageService(this.rpc);
   }
   
@@ -932,8 +965,56 @@ export class ArtifactsService {
             throw new NotebookLMError('Cookies are required for slide downloads. Ensure the RPC client has cookies configured.');
           }
           
-          // Get artifact list response to extract image URLs
-              const artifactsListResponse = await this.rpc.call(RPC.RPC_LIST_ARTIFACTS, [[2], notebookId], notebookId);
+          const downloadFormat = slideOptions.downloadAs || 'pdf';
+
+          // Get artifact list response to extract download URLs
+          const artifactsListResponse = await this.rpc.call(RPC.RPC_LIST_ARTIFACTS, [[2], notebookId], notebookId);
+
+          // PPTX path uses direct file download from contribution.usercontent URL
+          if (downloadFormat === 'pptx') {
+            let pptxUrl: string | null = null;
+
+            if (Array.isArray(artifactsListResponse)) {
+              for (const artifactEntry of artifactsListResponse) {
+                if (Array.isArray(artifactEntry) && artifactEntry.length > 0 && artifactEntry[0] === artifactId) {
+                  pptxUrl = extractPptxUrl(artifactEntry);
+                  if (pptxUrl) break;
+                }
+              }
+            }
+
+            if (!pptxUrl) {
+              pptxUrl = extractPptxUrl(artifactsListResponse);
+            }
+
+            if (!pptxUrl) {
+              throw new NotebookLMError('No PPTX download URL found. The slide deck may not be ready yet.');
+            }
+
+            const normalizedPptxUrl = normalizePdfUrl(pptxUrl, getRpcAuthUser(this.rpc));
+            const pptxData = await downloadFileFromUrl(normalizedPptxUrl, rpcCookies);
+
+            const fsModule: any = await import('fs/promises').catch(() => null);
+            if (!fsModule?.writeFile) {
+              throw new NotebookLMError('File system access not available');
+            }
+
+            const pathModule = await import('path');
+            await fsModule.mkdir(slideOptions.outputPath, { recursive: true });
+
+            const sanitizedTitle = (artifact.title || 'slides').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+            const pptxPath = pathModule.join(slideOptions.outputPath, `${sanitizedTitle}.pptx`);
+            await fsModule.writeFile(pptxPath, Buffer.from(pptxData));
+
+            return {
+              ...artifact,
+              downloadPath: pptxPath,
+              downloadFormat: 'pptx',
+              downloadUrl: normalizedPptxUrl,
+            };
+          }
+
+          // PDF/PNG path uses rendered slide images
           const imageUrls = extractSlideImageUrls(
             artifactsListResponse,
             artifactId,
@@ -948,7 +1029,6 @@ export class ArtifactsService {
           const images = await downloadSlideImages(imageUrls, rpcCookies);
           
           // Save as PDF (default) or PNG
-          const downloadFormat = slideOptions.downloadAs || 'pdf';
           const result = await saveSlideImages(
             images,
             slideOptions.outputPath,
@@ -1009,7 +1089,7 @@ export class ArtifactsService {
    * **Customization Options by Type:**
    * 
    * **Note:** Customization is only supported for the following artifact types:
-   * Quiz, Flashcards, Slide Deck, Infographic, Audio, Video.
+   * Quiz, Flashcards, Slide Deck, Infographic, Audio, Video, Data Table.
    * 
    * Other artifact types (Mind Map, Report) do not support customization.
    * 
@@ -1263,15 +1343,16 @@ export class ArtifactsService {
       ArtifactType.INFOGRAPHIC,
       ArtifactType.AUDIO,
       ArtifactType.VIDEO,
+      ArtifactType.DATA_TABLE,
     ];
     
     if (options.customization && !supportedCustomizationTypes.includes(type)) {
       throw new NotebookLMError(
         `Customization is not supported for artifact type ${type}. ` +
-        `Customization is only supported for: Quiz, Flashcards, Slide Deck, Infographic, Audio, Video.`
+        `Customization is only supported for: Quiz, Flashcards, Slide Deck, Infographic, Audio, Video, Data Table.`
       );
     }
-    
+
     // If sourceIds is omitted or empty, fetch all sources from the notebook
     let sourceIds = options.sourceIds || [];
     if (sourceIds.length === 0) {
@@ -1297,8 +1378,8 @@ export class ArtifactsService {
     // Mind Map uses yyryJe (RPC_ACT_ON_SOURCES) with special structure
     if (type === ArtifactType.MIND_MAP) {
       artifact = await this.createMindMap(notebookId, options);
-    } else if (type === ArtifactType.AUDIO || type === ArtifactType.VIDEO || type === ArtifactType.QUIZ || type === ArtifactType.FLASHCARDS || type === ArtifactType.SLIDE_DECK || type === ArtifactType.INFOGRAPHIC || type === ArtifactType.REPORT) {
-      // Audio, Video, Quiz, Flashcards, Slides, Infographics, and Reports all use R7cb6c
+    } else if (type === ArtifactType.AUDIO || type === ArtifactType.VIDEO || type === ArtifactType.QUIZ || type === ArtifactType.FLASHCARDS || type === ArtifactType.SLIDE_DECK || type === ArtifactType.INFOGRAPHIC || type === ArtifactType.REPORT || type === ArtifactType.DATA_TABLE) {
+      // Audio, Video, Quiz, Flashcards, Slides, Infographics, Reports, and Data Tables all use R7cb6c
       artifact = await this.createR7cb6cArtifact(notebookId, type, options);
     } else {
       // Other artifacts use xpWGLf
@@ -1572,6 +1653,8 @@ export class ArtifactsService {
         return 7;
       case ArtifactType.SLIDE_DECK:
         return 8;
+      case ArtifactType.DATA_TABLE:
+        return 9;
       case ArtifactType.VIDEO:
         return 3;
       case ArtifactType.AUDIO:
@@ -1819,6 +1902,8 @@ export class ArtifactsService {
         return ArtifactType.INFOGRAPHIC;
       case 8:
         return ArtifactType.SLIDE_DECK;
+      case 9:
+        return ArtifactType.DATA_TABLE;
       case 10:
         return ArtifactType.AUDIO;
       case 11:
@@ -1830,7 +1915,7 @@ export class ArtifactsService {
   }
   
   /**
-   * Create artifacts using R7cb6c RPC (Quiz, Slides, Infographics, Video)
+   * Create artifacts using R7cb6c RPC (Quiz, Slides, Infographics, Video, Data Table)
    */
   private async createR7cb6cArtifact(
     notebookId: string,
@@ -1852,10 +1937,12 @@ export class ArtifactsService {
     // For Audio: array needs at least 7 elements (0-6) for customization at index 6
     // For Video: array needs at least 9 elements (0-8) for customization at index 8
     // For Report: array needs exactly 8 elements (0-7) for customization at index 7 (NOT extended!)
+    // For Data Table: array needs at least 19 elements (0-18) for customization at index 18
     const needsExtendedArray = artifactType === ArtifactType.SLIDE_DECK || 
                                artifactType === ArtifactType.INFOGRAPHIC ||
                                artifactType === ArtifactType.AUDIO ||
-                               artifactType === ArtifactType.VIDEO;
+                               artifactType === ArtifactType.VIDEO ||
+                               artifactType === ArtifactType.DATA_TABLE;
     
     const innerArray: any[] = [
       null,  // Index 0
@@ -1880,6 +1967,14 @@ export class ArtifactsService {
         null,  // Index 14
         null,  // Index 15
         null,  // Index 16 (Slides customization goes here)
+      );
+    }
+    
+    // Data Table customization is at index 18 (field 19), so reserve indexes 17 and 18.
+    if (artifactType === ArtifactType.DATA_TABLE) {
+      innerArray.push(
+        null, // Index 17
+        null, // Index 18 (Data Table customization goes here)
       );
     }
     
@@ -1963,7 +2058,8 @@ export class ArtifactsService {
                          artifactType === ArtifactType.AUDIO ||
                          artifactType === ArtifactType.VIDEO ||
                          artifactType === ArtifactType.REPORT ||
-                         artifactType === ArtifactType.INFOGRAPHIC;
+                         artifactType === ArtifactType.INFOGRAPHIC ||
+                         artifactType === ArtifactType.DATA_TABLE;
     
     let defaultLanguage: string = 'en';
     if (needsLanguage) {
@@ -1983,7 +2079,8 @@ export class ArtifactsService {
       const slideInstructions = this.buildSlideInstructions(
         instructions,
         slideDesignTemplate,
-        effectiveSlideLanguage
+        effectiveSlideLanguage,
+        slideCustom
       );
       
       (args[2] as any[])[16] = [[
@@ -2111,6 +2208,24 @@ export class ArtifactsService {
             format, // Index 6: Format (2 = "Create Your Own")
           ],
         ];
+    } else if (artifactType === ArtifactType.DATA_TABLE) {
+      // Data Table customization at index 18 (field 19): [null, [userSteeringPrompt, language, detailLevel]]
+      // Structure aligns with R7cb6c table generation options serializer (YHa -> fields 1,2,3).
+      const tableCustom = customization as DataTableCustomization | undefined;
+      const effectiveLanguage = tableCustom?.language || defaultLanguage;
+      const prompt = (tableCustom?.userSteeringPrompt ?? instructions)?.trim() || null;
+      const detailLevel = tableCustom?.detailLevel === 1 || tableCustom?.detailLevel === 3
+        ? tableCustom.detailLevel
+        : 2;
+
+      (args[2] as any[])[18] = [
+        null,
+        [
+          prompt,            // Index 0 (proto field 1): userSteeringPrompt
+          effectiveLanguage, // Index 1 (proto field 2): language
+          detailLevel,       // Index 2 (proto field 3): detailLevel
+        ],
+      ];
     }
     
     // Optional customization for other artifacts (only if provided)
@@ -2180,13 +2295,17 @@ export class ArtifactsService {
   private buildSlideInstructions(
     instructions: string,
     slideDesignTemplate: string | undefined,
-    language: string
+    language: string,
+    slideCustomization?: SlideDeckCustomization
   ): string | null {
     const baseInstructions = instructions.trim();
+    const directDescription = slideCustomization?.description?.trim() || '';
     const designTemplate = slideDesignTemplate?.trim();
-    if (!designTemplate) {
-      return baseInstructions || null;
-    }
+    const advancedPlan = this.buildSlideAdvancedPlan(slideCustomization);
+    const mergedInstructionBody = [directDescription, baseInstructions, advancedPlan]
+      .map(part => part?.trim())
+      .filter((part): part is string => !!part)
+      .join('\n\n');
 
     const languageLock = [
       'Output language requirements:',
@@ -2195,11 +2314,99 @@ export class ArtifactsService {
     ].join('\n');
 
     const mergedParts = [languageLock];
-    if (baseInstructions) {
-      mergedParts.push(baseInstructions);
+    if (mergedInstructionBody) {
+      mergedParts.push(mergedInstructionBody);
     }
-    mergedParts.push(`Design template (must follow):\n${designTemplate}`);
+    if (designTemplate) {
+      mergedParts.push(`Design template (must follow):\n${designTemplate}`);
+    }
     return mergedParts.join('\n\n');
+  }
+
+  private buildSlideAdvancedPlan(slideCustomization?: SlideDeckCustomization): string | null {
+    if (!slideCustomization) {
+      return null;
+    }
+
+    const normalizeList = (items?: string[]): string[] =>
+      (items || [])
+        .map(item => item?.trim())
+        .filter((item): item is string => !!item)
+        .slice(0, 20);
+
+    const lines: string[] = [];
+
+    const summary = slideCustomization.summary?.trim();
+    if (summary) {
+      lines.push(`Deck summary: ${summary}`);
+    }
+
+    const audienceAlias = slideCustomization.audience?.trim();
+    const audience = slideCustomization.targetAudience?.trim();
+    if (audience || audienceAlias) {
+      lines.push(`Target audience: ${audience || audienceAlias}`);
+    }
+
+    const goal = slideCustomization.presentationGoal?.trim();
+    if (goal) {
+      lines.push(`Presentation goal: ${goal}`);
+    }
+
+    const styleAlias = slideCustomization.style?.trim();
+    const tone = slideCustomization.tone?.trim();
+    if (tone || styleAlias) {
+      lines.push(`Tone: ${tone || styleAlias}`);
+    }
+
+    if (slideCustomization.speakerNotesStyle && slideCustomization.speakerNotesStyle !== 'none') {
+      lines.push(`Speaker notes: ${slideCustomization.speakerNotesStyle}`);
+    }
+
+    const mustInclude = normalizeList(slideCustomization.mustInclude);
+    if (mustInclude.length > 0) {
+      lines.push(`Must include: ${mustInclude.map(item => `"${item}"`).join(', ')}`);
+    }
+
+    const points = normalizeList(slideCustomization.points);
+    if (points.length > 0) {
+      lines.push(`Priority points: ${points.map(item => `"${item}"`).join(', ')}`);
+    }
+
+    const mustAvoid = normalizeList(slideCustomization.mustAvoid);
+    if (mustAvoid.length > 0) {
+      lines.push(`Must avoid: ${mustAvoid.map(item => `"${item}"`).join(', ')}`);
+    }
+
+    const sections = (slideCustomization.sections || [])
+      .filter(section => section && typeof section.title === 'string' && section.title.trim().length > 0)
+      .slice(0, 20);
+
+    if (sections.length > 0) {
+      lines.push('Slide plan (in order):');
+      sections.forEach((section, index) => {
+        const sectionTitle = section.title.trim();
+        const sectionObjective = section.objective?.trim();
+        const sectionVisualDirection = section.visualDirection?.trim();
+        const sectionKeyPoints = normalizeList(section.keyPoints).slice(0, 8);
+
+        lines.push(`${index + 1}. ${sectionTitle}`);
+        if (sectionObjective) {
+          lines.push(`   - Objective: ${sectionObjective}`);
+        }
+        if (sectionKeyPoints.length > 0) {
+          lines.push(`   - Key points: ${sectionKeyPoints.join(' | ')}`);
+        }
+        if (sectionVisualDirection) {
+          lines.push(`   - Visual direction: ${sectionVisualDirection}`);
+        }
+      });
+    }
+
+    if (lines.length === 0) {
+      return null;
+    }
+
+    return ['Advanced slide planning requirements:', ...lines].join('\n');
   }
   
   /**
@@ -2633,7 +2840,7 @@ export class ArtifactsService {
     // Parse artifact type - could be at index 2 or another position
     let typeIndex = -1;
     for (let i = 1; i < Math.min(data.length, 5); i++) {
-      if (typeof data[i] === 'number' && data[i] >= 1 && data[i] <= 10) {
+      if (typeof data[i] === 'number' && data[i] >= 1 && data[i] <= 12) {
         typeIndex = i;
         break;
       }
@@ -5055,51 +5262,89 @@ function normalizePdfUrl(url: string, authUser?: string): string {
 }
 
 function extractPdfUrl(artifact: any): string | null {
+  return extractContributionUrl(artifact, 'pdf');
+}
+
+function extractPptxUrl(artifact: any): string | null {
+  return extractContributionUrl(artifact, 'pptx');
+}
+
+function extractContributionUrl(artifact: any, extension: 'pdf' | 'pptx'): string | null {
   if (!artifact) return null;
+
   const artifactString = JSON.stringify(artifact);
-  const urlPattern = /https?:\/\/contribution\.usercontent\.google\.com\/download[^\s"',\]\}]+/g;
+  const encodedExtPattern = extension === 'pdf' ? '(?:\\.pdf|%2Epdf)' : '(?:\\.pptx|%2Epptx)';
+  const urlPattern = new RegExp(
+    `https?:\\/\\/contribution\\.usercontent\\.google\\.com\\/download[^\\s\"',\\]\\}]*${encodedExtPattern}[^\\s\"',\\]\\}]*`,
+    'ig'
+  );
   const matches = artifactString.match(urlPattern);
   if (matches && matches.length > 0) {
     return matches[0];
   }
-  const searchForPdfUrl = (obj: any, depth = 0): string | null => {
+
+  const searchForUrl = (obj: any, depth = 0): string | null => {
     if (depth > 10) return null;
     if (typeof obj === 'string') {
       if (obj.includes('contribution.usercontent.google.com/download')) {
-        const urlMatch = obj.match(/https?:\/\/[^\s"',\]\}]+contribution\.usercontent\.google\.com\/download[^\s"',\]\}]+/);
-        if (urlMatch) return urlMatch[0];
+        const urlMatch = obj.match(/https?:\/\/[^\s"',\]\}]+contribution\.usercontent\.google\.com\/download[^\s"',\]\}]+/i);
+        if (urlMatch) {
+          const candidate = urlMatch[0];
+          if (matchesContributionExtension(candidate, extension)) {
+            return candidate;
+          }
+        }
         if (obj.startsWith('http://') || obj.startsWith('https://')) return obj;
       }
     } else if (Array.isArray(obj)) {
       for (const item of obj) {
-        const found = searchForPdfUrl(item, depth + 1);
+        const found = searchForUrl(item, depth + 1);
         if (found) return found;
       }
     } else if (obj && typeof obj === 'object') {
-      const priorityKeys = ['url', 'downloadUrl', 'pdfUrl', 'fileUrl', 'download', 'pdf', 'file'];
+      const priorityKeys = ['url', 'downloadUrl', 'pdfUrl', 'pptxUrl', 'fileUrl', 'download', 'pdf', 'pptx', 'file'];
       for (const key of priorityKeys) {
         if (obj[key]) {
-          const found = searchForPdfUrl(obj[key], depth + 1);
+          const found = searchForUrl(obj[key], depth + 1);
           if (found) return found;
         }
       }
       for (const key in obj) {
-        if (key.toLowerCase().includes('url') || key.toLowerCase().includes('download') || key.toLowerCase().includes('pdf') || key.toLowerCase().includes('file')) {
-          const found = searchForPdfUrl(obj[key], depth + 1);
+        if (key.toLowerCase().includes('url') || key.toLowerCase().includes('download') || key.toLowerCase().includes('pdf') || key.toLowerCase().includes('pptx') || key.toLowerCase().includes('file')) {
+          const found = searchForUrl(obj[key], depth + 1);
           if (found) return found;
         }
       }
       for (const value of Object.values(obj)) {
-        const found = searchForPdfUrl(value, depth + 1);
+        const found = searchForUrl(value, depth + 1);
         if (found) return found;
       }
     }
     return null;
   };
-  return searchForPdfUrl(artifact);
+
+  const found = searchForUrl(artifact);
+  if (!found) return null;
+  if (matchesContributionExtension(found, extension)) {
+    return found;
+  }
+  return null;
 }
 
-function downloadPdfFromUrl(url: string, cookies: string): Promise<Uint8Array> {
+function matchesContributionExtension(url: string, extension: 'pdf' | 'pptx'): boolean {
+  const lower = url.toLowerCase();
+  const ext = extension.toLowerCase();
+
+  if (lower.includes(`.${ext}`) || lower.includes(`%2e${ext}`)) {
+    return true;
+  }
+
+  // Match filename query param with plain or URL-encoded extension
+  const filenamePattern = new RegExp(`filename=[^&]*(?:\\.${ext}|%2e${ext})(?:[&$])?`, 'i');
+  return filenamePattern.test(lower);
+}
+
+function downloadFileFromUrl(url: string, cookies: string): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const isHttps = urlObj.protocol === 'https:';
@@ -5123,48 +5368,35 @@ function downloadPdfFromUrl(url: string, cookies: string): Promise<Uint8Array> {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         const location = res.headers.location;
         const redirectUrl = location.startsWith('http') ? location : `${urlObj.protocol}//${urlObj.hostname}${location}`;
-        return downloadPdfFromUrl(redirectUrl, cookies).then(resolve).catch(reject);
+        return downloadFileFromUrl(redirectUrl, cookies).then(resolve).catch(reject);
       }
       if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-        if (res.statusCode === 400 || res.statusCode === 401 || res.statusCode === 403) {
-          const errorChunks: Buffer[] = [];
-          res.on('data', (chunk: Buffer) => errorChunks.push(chunk));
-          res.on('end', () => {
-            const responseBuffer = Buffer.concat(errorChunks);
-            const responseText = responseBuffer.toString('utf-8');
-            const location = res.headers.location || '';
-            if (location) {
-              reject(new NotebookLMError(`Authentication required. The PDF download URL requires valid Google authentication cookies. HTTP ${res.statusCode}. Redirected to: ${location}`));
-            } else {
-              reject(new NotebookLMError(`Failed to download PDF: HTTP ${res.statusCode}. This may indicate an authentication issue.`));
-            }
-          });
-          return;
-        }
-        reject(new NotebookLMError(`Failed to download PDF: HTTP ${res.statusCode}`));
+        reject(new NotebookLMError(`Failed to download file: HTTP ${res.statusCode}`));
         return;
       }
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => {
-        const pdfData = Buffer.concat(chunks);
-        if (pdfData.length > 0 && pdfData[0] !== 0x25) {
-          const text = pdfData.toString('utf-8', 0, Math.min(500, pdfData.length));
-          if (text.includes('Sign in') || text.includes('accounts.google.com') || text.includes('<html')) {
-            reject(new NotebookLMError(`Authentication required. The PDF download URL requires valid Google authentication cookies. Received HTML sign-in page instead of PDF.`));
-            return;
-          }
-        }
-        resolve(new Uint8Array(pdfData));
-      });
-      res.on('error', (error: Error) => reject(new NotebookLMError(`Error downloading PDF: ${error.message}`)));
+      res.on('end', () => resolve(new Uint8Array(Buffer.concat(chunks))));
+      res.on('error', (error: Error) => reject(new NotebookLMError(`Error downloading file: ${error.message}`)));
     });
     req.on('error', (error: Error) => reject(new NotebookLMError(`Request error: ${error.message}`)));
     req.setTimeout(30000, () => {
       req.destroy();
-      reject(new NotebookLMError('PDF download request timed out'));
+      reject(new NotebookLMError('File download request timed out'));
     });
     req.end();
+  });
+}
+
+function downloadPdfFromUrl(url: string, cookies: string): Promise<Uint8Array> {
+  return downloadFileFromUrl(url, cookies).then((pdfData) => {
+    if (pdfData.length > 0 && pdfData[0] !== 0x25) {
+      const text = Buffer.from(pdfData).toString('utf-8', 0, Math.min(500, pdfData.length));
+      if (text.includes('Sign in') || text.includes('accounts.google.com') || text.includes('<html')) {
+        throw new NotebookLMError('Authentication required. The PDF download URL returned an HTML sign-in page.');
+      }
+    }
+    return pdfData;
   });
 }
 
