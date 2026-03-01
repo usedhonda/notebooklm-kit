@@ -94,6 +94,40 @@ export interface NotebookLMBrowserSession {
   credsPath: string;
 }
 
+function parseBooleanEnv(raw: string | undefined): boolean | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  return undefined;
+}
+
+function isSshSession(): boolean {
+  return Boolean(
+    process.env.SSH_CONNECTION ||
+    process.env.SSH_CLIENT ||
+    process.env.SSH_TTY
+  );
+}
+
+function resolveHeadlessMode(defaultValue: boolean): boolean {
+  const explicit = parseBooleanEnv(process.env.NOTEBOOKLM_HEADLESS);
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  // SSH sessions commonly have no WindowServer/GUI access.
+  if (isSshSession()) {
+    return true;
+  }
+  return defaultValue;
+}
+
 export function resolveDevAuthUser(): string {
   const rawAuthUser = process.env.NOTEBOOKLM_DEV_AUTHUSER?.trim();
   if (!rawAuthUser) {
@@ -431,9 +465,10 @@ export async function createAuthenticatedNotebookLMBrowserSession(options?: {
     options?.userDataDir?.trim() ||
     process.env.NOTEBOOKLM_PLAYWRIGHT_PROFILE_DIR?.trim() ||
     DEFAULT_PLAYWRIGHT_PROFILE_DIR;
+  const resolvedHeadless = resolveHeadlessMode(options?.headless ?? false);
 
   const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: options?.headless ?? false,
+    headless: resolvedHeadless,
     userAgent: USER_AGENT,
     viewport: { width: 1920, height: 1080 },
   });
@@ -456,6 +491,12 @@ export async function createAuthenticatedNotebookLMBrowserSession(options?: {
       if (restored.applied && await isNotebookLMAuthenticated(page, loginUrl)) {
         loginResolution = 'saved-cookies';
       } else {
+        if (resolvedHeadless) {
+          throw new Error(
+            'NotebookLM authentication requires interactive login, but headless mode is enabled. ' +
+            'Over SSH, run once on a GUI session to persist cookies, or provide NOTEBOOKLM_AUTH_TOKEN/NOTEBOOKLM_COOKIES.'
+          );
+        }
         console.log('\nSaved cookies are missing or expired. Manual login is required.\n');
         await waitForEnter('Login is complete? Press Enter to continue: ');
         if (!await isNotebookLMAuthenticated(page, loginUrl)) {
@@ -486,13 +527,18 @@ export async function exportCookiesToOpenClawSecrets(options?: {
   loginUrl?: string;
   userDataDir?: string;
 }): Promise<{ filePath: string; cookiesLength: number; loginResolution: NotebookLMBrowserSession['loginResolution'] }> {
-  console.log('\n🌐 Opening browser (visible mode) for NotebookLM session bootstrap...\n');
+  const resolvedHeadless = resolveHeadlessMode(false);
+  if (resolvedHeadless) {
+    console.log('\n🌐 Opening browser (headless mode) for NotebookLM session bootstrap...\n');
+  } else {
+    console.log('\n🌐 Opening browser (visible mode) for NotebookLM session bootstrap...\n');
+  }
 
   const session = await createAuthenticatedNotebookLMBrowserSession({
     credsPath: options?.credsPath,
     loginUrl: options?.loginUrl,
     userDataDir: options?.userDataDir,
-    headless: false,
+    headless: resolvedHeadless,
   });
   try {
     const cookies = await session.context.cookies();
@@ -544,11 +590,12 @@ export async function createSDK(config?: { debug?: boolean }): Promise<NotebookL
 
   // Option 2: Auto-login with email/password (priority - opens visible browser)
   if (googleEmail && googlePassword) {
+    const resolvedHeadless = resolveHeadlessMode(false);
     return new NotebookLMClient({
       auth: {
         email: googleEmail,
         password: googlePassword,
-        headless: false, // Visible browser for manual intervention
+        headless: resolvedHeadless,
       },
       authUser,
       autoRefresh: true,
