@@ -934,7 +934,11 @@ export class ArtifactsService {
           
           // Get artifact list response to extract image URLs
               const artifactsListResponse = await this.rpc.call(RPC.RPC_LIST_ARTIFACTS, [[2], notebookId], notebookId);
-          const imageUrls = extractSlideImageUrls(artifactsListResponse, artifactId);
+          const imageUrls = extractSlideImageUrls(
+            artifactsListResponse,
+            artifactId,
+            getRpcAuthUser(this.rpc)
+          );
           
           if (imageUrls.length === 0) {
             throw new NotebookLMError('No slide image URLs found. The slide deck may not be ready yet.');
@@ -1507,7 +1511,11 @@ export class ArtifactsService {
       
       // Get artifact list response to extract image URLs
       const artifactsListResponse = await this.rpc.call(RPC.RPC_LIST_ARTIFACTS, [[2], notebookId], notebookId);
-      const imageUrls = extractSlideImageUrls(artifactsListResponse, artifactId);
+      const imageUrls = extractSlideImageUrls(
+        artifactsListResponse,
+        artifactId,
+        getRpcAuthUser(this.rpc)
+      );
       
       if (imageUrls.length === 0) {
         throw new NotebookLMError('No slide image URLs found. The slide deck may not be ready yet.');
@@ -4341,6 +4349,40 @@ function findFlashcardsArray(obj: any, depth: number = 0): any[] {
   return [];
 }
 
+function resolveAuthUserParam(authUser?: string): string {
+  const trimmed = authUser?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : '0';
+}
+
+function getRpcAuthUser(rpc: RPCClient): string {
+  return resolveAuthUserParam(rpc.getConfig().authUser);
+}
+
+function withAuthUser(url: string, authUser?: string): string {
+  if (!url) {
+    return url;
+  }
+
+  const resolvedAuthUser = resolveAuthUserParam(authUser);
+  const normalized = url
+    .replace(/\\u003d/g, '=')
+    .replace(/\\u0026/g, '&')
+    .replace(/\\u002f/g, '/')
+    .replace(/\\=/g, '=')
+    .replace(/\\&/g, '&');
+
+  try {
+    const parsedUrl = new URL(normalized);
+    parsedUrl.searchParams.set('authuser', resolvedAuthUser);
+    return parsedUrl.toString();
+  } catch {
+    if (normalized.includes('authuser=')) {
+      return normalized.replace(/([?&])authuser=[^&#]*/i, `$1authuser=${resolvedAuthUser}`);
+    }
+    return `${normalized}${normalized.includes('?') ? '&' : '?'}authuser=${resolvedAuthUser}`;
+  }
+}
+
 export async function fetchInfographic(
   rpc: RPCClient,
   infographicId: string,
@@ -4372,15 +4414,7 @@ export async function fetchInfographic(
     }
   }
   if (!imageUrl) throw new NotebookLMError(`No image URL found in infographic response for ID ${infographicId}`);
-  try {
-    const urlObj = new URL(imageUrl);
-    if (!urlObj.searchParams.has('authuser')) {
-      urlObj.searchParams.set('authuser', '0');
-      imageUrl = urlObj.toString();
-    }
-  } catch (urlError) {
-    console.warn(`Warning: Could not parse image URL: ${imageUrl}`);
-  }
+  imageUrl = withAuthUser(imageUrl, getRpcAuthUser(rpc));
   const dimensions = parseDimensionsFromUrl(imageUrl);
   const result: InfographicImageData = { imageUrl, mimeType: 'image/png', ...dimensions };
   if (options.downloadImage) {
@@ -4388,7 +4422,7 @@ export async function fetchInfographic(
     if (!cookies || !cookies.trim()) {
       throw new NotebookLMError('Cookies are required for downloading infographic images. Please provide cookies in the options or ensure the RPC client has cookies configured.');
     }
-    const imageData = await downloadImageFromUrl(imageUrl, cookies);
+    const imageData = await downloadImageFromUrl(imageUrl, cookies, getRpcAuthUser(rpc));
     result.imageData = imageData;
   }
   return result;
@@ -4475,11 +4509,18 @@ function parseDimensionsFromUrl(url: string): { width?: number; height?: number 
   return dimensions;
 }
 
-async function downloadImageFromUrl(url: string, cookies: string): Promise<Uint8Array | ArrayBuffer> {
+async function downloadImageFromUrl(
+  url: string,
+  cookies: string,
+  authUser?: string
+): Promise<Uint8Array | ArrayBuffer> {
+  const resolvedUrl = withAuthUser(url, authUser);
+  const resolvedAuthUser = resolveAuthUserParam(authUser);
+
   // Pre-authenticate if cookies available
   if (cookies && cookies.trim()) {
     try {
-      await preAuthenticateForDownload(cookies);
+      await preAuthenticateForDownload(cookies, resolvedAuthUser);
     } catch {
       // Don't fail if pre-auth fails
     }
@@ -4487,13 +4528,17 @@ async function downloadImageFromUrl(url: string, cookies: string): Promise<Uint8
   
   const isNode = typeof process !== 'undefined' && process.versions?.node;
   if (isNode) {
-    return downloadWithNodeHttp(url, cookies);
+    return downloadWithNodeHttp(resolvedUrl, cookies, resolvedAuthUser);
   } else {
-    return downloadWithFetch(url, cookies);
+    return downloadWithFetch(resolvedUrl, cookies);
   }
 }
 
-async function downloadWithNodeHttp(url: string, cookies?: string): Promise<Uint8Array | ArrayBuffer> {
+async function downloadWithNodeHttp(
+  url: string,
+  cookies?: string,
+  authUser?: string
+): Promise<Uint8Array | ArrayBuffer> {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const client = urlObj.protocol === 'https:' ? https : http;
@@ -4520,7 +4565,7 @@ async function downloadWithNodeHttp(url: string, cookies?: string): Promise<Uint
     const req = client.request(options, (res: any) => {
       if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          return downloadImageFromUrl(res.headers.location, cookies || '').then(resolve).catch(reject);
+          return downloadImageFromUrl(res.headers.location, cookies || '', authUser).then(resolve).catch(reject);
         }
         reject(new NotebookLMError(`Failed to download image: HTTP ${res.statusCode}`));
         return;
@@ -4617,7 +4662,7 @@ export async function downloadSlidesFile(
     if (!pdfUrl) {
       throw new NotebookLMError(`No PDF download URL found for slide ID ${slideId}. The slide deck may not be ready yet. Please check that the slide deck is in READY state.`);
     }
-    pdfUrl = normalizePdfUrl(pdfUrl);
+    pdfUrl = normalizePdfUrl(pdfUrl, getRpcAuthUser(rpc));
     const rpcCookies = rpc.getCookies();
     let finalCookies = rpcCookies;
     if (options.googleDomainCookies) {
@@ -4686,7 +4731,11 @@ const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 /**
  * Extract slide image URLs from artifact RPC response
  */
-function extractSlideImageUrls(artifactData: any, targetArtifactId?: string): string[] {
+function extractSlideImageUrls(
+  artifactData: any,
+  targetArtifactId?: string,
+  authUser?: string
+): string[] {
   const urls: string[] = [];
   
   function searchForSlides(obj: any, depth = 0): void {
@@ -4701,12 +4750,7 @@ function extractSlideImageUrls(artifactData: any, targetArtifactId?: string): st
           typeof obj[1] === 'number' &&
           typeof obj[2] === 'number') {
         let url = String(obj[0]);
-        url = url.replace(/\\u003d/g, '=').replace(/\\u0026/g, '&').replace(/\\u002f/g, '/');
-        if (!url.includes('?')) {
-          url += '?authuser=0';
-        } else if (!url.includes('authuser=0')) {
-          url += '&authuser=0';
-        }
+        url = withAuthUser(url.replace(/\\u003d/g, '=').replace(/\\u0026/g, '&').replace(/\\u002f/g, '/'), authUser);
         if (!urls.includes(url) && (url.includes('=w') || url.includes('=s'))) {
           urls.push(url);
         }
@@ -4720,13 +4764,12 @@ function extractSlideImageUrls(artifactData: any, targetArtifactId?: string): st
       for (const value of Object.values(obj)) {
         searchForSlides(value, depth + 1);
       }
-    } else if (typeof obj === 'string' && obj.includes('lh3.googleusercontent.com/notebooklm') && (obj.includes('=w') || obj.includes('=s'))) {
-      let url = obj.replace(/\\u003d/g, '=').replace(/\\u0026/g, '&');
-      if (!url.includes('?')) {
-        url += '?authuser=0';
-      } else if (!url.includes('authuser=0')) {
-        url += '&authuser=0';
-      }
+    } else if (
+      typeof obj === 'string' &&
+      obj.includes('lh3.googleusercontent.com/notebooklm') &&
+      (obj.includes('=w') || obj.includes('=s'))
+    ) {
+      const url = withAuthUser(obj.replace(/\\u003d/g, '=').replace(/\\u0026/g, '&'), authUser);
       if (!urls.includes(url)) {
         urls.push(url);
       }
@@ -5003,17 +5046,12 @@ async function saveSlideImages(
   }
 }
 
-function normalizePdfUrl(url: string): string {
+function normalizePdfUrl(url: string, authUser?: string): string {
   if (!url) return url;
-  let normalized = url.replace(/\\u003d/g, '=').replace(/\\u0026/g, '&').replace(/\\=/g, '=').replace(/\\&/g, '&');
-  if (!normalized.includes('authuser=')) {
-    if (normalized.includes('?')) {
-      normalized += '&authuser=0';
-    } else {
-      normalized += '?authuser=0';
-    }
-  }
-  return normalized;
+  return withAuthUser(
+    url.replace(/\\u003d/g, '=').replace(/\\u0026/g, '&').replace(/\\=/g, '=').replace(/\\&/g, '&'),
+    authUser
+  );
 }
 
 function extractPdfUrl(artifact: any): string | null {
@@ -5966,7 +6004,10 @@ function generateSAPISIDHASH(sapisid: string, timestamp: number): string {
 /**
  * Pre-authenticate by calling play.google.com/log
  */
-async function preAuthenticateForDownload(cookies: string): Promise<void> {
+async function preAuthenticateForDownload(
+  cookies: string,
+  authUser?: string
+): Promise<void> {
   const sapisid = extractSAPISID(cookies);
   if (!sapisid) {
     return;
@@ -5977,7 +6018,8 @@ async function preAuthenticateForDownload(cookies: string): Promise<void> {
     const authHash = generateSAPISIDHASH(sapisid, timestamp);
     const authString = `SAPISIDHASH+${authHash}+SAPISID1PHASH+${authHash}+SAPISID3PHASH+${authHash}`;
     const encodedAuth = authString.replace(/\+/g, '%2B');
-    const logUrl = `https://play.google.com/log?hasfast=true&auth=${encodedAuth}&authuser=0&format=json`;
+    const resolvedAuthUser = resolveAuthUserParam(authUser);
+    const logUrl = `https://play.google.com/log?hasfast=true&auth=${encodedAuth}&authuser=${resolvedAuthUser}&format=json`;
     
     const isNode = typeof process !== 'undefined' && process.versions?.node;
     

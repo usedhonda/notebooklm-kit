@@ -62,6 +62,22 @@ process.stdout.write = originalStdoutWrite;
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36';
 
+export function resolveDevAuthUser(): string {
+  const rawAuthUser = process.env.NOTEBOOKLM_DEV_AUTHUSER?.trim();
+  if (!rawAuthUser) {
+    return '0';
+  }
+
+  if (/^\d+$/.test(rawAuthUser)) {
+    return rawAuthUser;
+  }
+
+  console.warn(
+    `[notebooklm-kit] Invalid NOTEBOOKLM_DEV_AUTHUSER="${rawAuthUser}". Falling back to "0".`
+  );
+  return '0';
+}
+
 /**
  * Wait for user input (press Enter)
  */
@@ -168,6 +184,7 @@ export async function createSDK(config?: { debug?: boolean }): Promise<NotebookL
   const authToken = process.env.NOTEBOOKLM_AUTH_TOKEN;
   const cookies = process.env.NOTEBOOKLM_COOKIES;
   const extractCookies = process.env.EXTRACT_COOKIES === 'true';
+  const authUser = resolveDevAuthUser();
 
   // Option 1: Extract cookies from visible browser
   if (extractCookies) {
@@ -182,6 +199,7 @@ export async function createSDK(config?: { debug?: boolean }): Promise<NotebookL
     return new NotebookLMClient({
       authToken: credentials.authToken,
       cookies: credentials.cookies,
+      authUser,
       autoRefresh: true,
       enforceQuotas: false,
       debug: config?.debug,
@@ -196,6 +214,7 @@ export async function createSDK(config?: { debug?: boolean }): Promise<NotebookL
         password: googlePassword,
         headless: false, // Visible browser for manual intervention
       },
+      authUser,
       autoRefresh: true,
       enforceQuotas: false,
       debug: config?.debug,
@@ -207,6 +226,7 @@ export async function createSDK(config?: { debug?: boolean }): Promise<NotebookL
     return new NotebookLMClient({
       authToken,
       cookies,
+      authUser,
       autoRefresh: true,
       enforceQuotas: false,
       debug: config?.debug,
@@ -234,4 +254,3 @@ export function handleError(error: unknown, context: string): never {
   }
   process.exit(1);
 }
-
