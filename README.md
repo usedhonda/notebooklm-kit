@@ -259,10 +259,9 @@ When working with the repository, you can use the following npm scripts:
 
 | Script | Description |
 |--------|-------------|
-| `npm install` | Install dependencies and automatically build (runs postinstall) |
+| `npm install` | Install dependencies and run postinstall (`playwright install chromium`) |
 | `npm run setup` | Full setup: install dependencies, Playwright, and build |
 | `npm run build` | Compile TypeScript to JavaScript |
-| `npm run build:dev` | Build only (no reinstall) |
 | `npm run dev` | Watch mode (auto-rebuild on file changes) |
 | `npm run clean` | Remove compiled dist/ directory |
 
@@ -276,7 +275,7 @@ npm run setup
 
 **Build only (no reinstall):**
 ```bash
-npm run build:dev
+npm run build
 ```
 
 **Watch mode (auto-rebuild):**
@@ -1300,19 +1299,20 @@ const sourceId = await sdk.sources.addYouTube('notebook-id', {
 
 ---
 
-#### `searchWebAndWait(notebookId: string, options: SearchWebOptions)` → `Promise<SearchWebResult>`
+#### `searchWebAndWait(notebookId: string, options: SearchWebAndWaitOptions)` → `Promise<SearchWebResult>`
 Search the web or Google Drive and wait for results.
 
 **Parameters:**
 - `notebookId: string` - The notebook ID
 - `options.query: string` - Search query
 - `options.sourceType: SearchSourceType` - WEB or GOOGLE_DRIVE
-- `options.mode: ResearchMode` - STANDARD or DEEP
+- `options.mode: ResearchMode` - FAST or DEEP
 
 **Returns:**
 - `SearchWebResult` - Object with:
   - `sessionId: string` - Session ID for adding sources
-  - `sources: Array<{sourceId: string, title: string, ...}>` - Found sources
+  - `web: DiscoveredWebSource[]` - Found web sources
+  - `drive: DiscoveredDriveSource[]` - Found Google Drive sources
 
 **Example:**
 ```typescript
@@ -1321,19 +1321,19 @@ import { SearchSourceType, ResearchMode } from 'notebooklm-kit'
 const result = await sdk.sources.searchWebAndWait('notebook-id', {
   query: 'machine learning trends 2024',
   sourceType: SearchSourceType.WEB,
-  mode: ResearchMode.STANDARD,
+  mode: ResearchMode.FAST,
 })
 
 // Add selected sources
 const sourceIds = await sdk.sources.addDiscovered('notebook-id', {
   sessionId: result.sessionId,
-  sourceIds: result.sources.slice(0, 5).map(s => s.sourceId),
+  webSources: result.web.slice(0, 5),
 })
 ```
 
 ---
 
-#### `pollProcessing(notebookId: string)` → `Promise<SourceProcessingStatus>`
+#### `status(notebookId: string)` → `Promise<SourceProcessingStatus>`
 Check source processing status.
 
 **Parameters:**
@@ -1341,16 +1341,14 @@ Check source processing status.
 
 **Returns:**
 - `SourceProcessingStatus` - Object with:
-  - `readyCount: number` - Number of ready sources
-  - `totalCount: number` - Total sources
-  - `processingCount: number` - Sources being processed
-  - `failedCount: number` - Failed sources
   - `allReady: boolean` - Whether all sources are ready
+  - `processing: string[]` - Source IDs still processing
 
 **Example:**
 ```typescript
-const status = await sdk.sources.pollProcessing('notebook-id')
-console.log(`Ready: ${status.readyCount}/${status.totalCount}`)
+const status = await sdk.sources.status('notebook-id')
+console.log(`All ready: ${status.allReady}`)
+console.log(`Still processing: ${status.processing.length}`)
 ```
 
 </details>
@@ -3999,7 +3997,7 @@ const sourceId = await sdk.sources.add.url(notebookId, {
 
 // Wait for processing to complete
 let status = await sdk.sources.status(notebookId);
-while (status.sources.find(s => s.sourceId === sourceId)?.state !== 'READY') {
+while (status.processing.includes(sourceId)) {
   await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
   status = await sdk.sources.status(notebookId);
 }
@@ -4187,7 +4185,7 @@ async function main() {
 
     // Wait for source to be ready
     let status = await sdk.sources.status(notebook.projectId);
-    while (status.sources.find(s => s.sourceId === sourceId)?.state !== 'READY') {
+    while (status.processing.includes(sourceId)) {
       await new Promise(resolve => setTimeout(resolve, 2000));
       status = await sdk.sources.status(notebook.projectId);
     }
