@@ -2,6 +2,8 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { existsSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { NotebookLMClient } from '../src/index.js';
 import { chromium, Browser } from 'playwright';
 import * as readline from 'readline';
@@ -61,6 +63,8 @@ dotenv.config({ path: envPath });
 process.stdout.write = originalStdoutWrite;
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36';
+const DEFAULT_OPENCLAW_CREDS_PATH = join(homedir(), '.openclaw', 'secrets', 'notebooklm-creds.json');
+const DEFAULT_PLAYWRIGHT_PROFILE_DIR = join(homedir(), '.openclaw', 'playwright', 'notebooklm-profile');
 
 export function resolveDevAuthUser(): string {
   const rawAuthUser = process.env.NOTEBOOKLM_DEV_AUTHUSER?.trim();
@@ -76,6 +80,43 @@ export function resolveDevAuthUser(): string {
     `[notebooklm-kit] Invalid NOTEBOOKLM_DEV_AUTHUSER="${rawAuthUser}". Falling back to "0".`
   );
   return '0';
+}
+
+function getOpenClawCredsPath(explicitPath?: string): string {
+  const envPath = process.env.OPENCLAW_NOTEBOOKLM_CREDS_PATH?.trim();
+  if (explicitPath?.trim()) {
+    return explicitPath.trim();
+  }
+  if (envPath) {
+    return envPath;
+  }
+  return DEFAULT_OPENCLAW_CREDS_PATH;
+}
+
+async function writeCookiesToOpenClawSecrets(cookies: string, explicitPath?: string): Promise<string> {
+  const targetPath = getOpenClawCredsPath(explicitPath);
+  let currentData: Record<string, unknown> = {};
+
+  try {
+    const existingText = await readFile(targetPath, 'utf-8');
+    const parsed = JSON.parse(existingText);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      currentData = parsed as Record<string, unknown>;
+    }
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') {
+      throw new Error(`Failed to read existing credentials file at ${targetPath}: ${error?.message || String(error)}`);
+    }
+  }
+
+  const updatedData = {
+    ...currentData,
+    cookies,
+  };
+
+  await mkdir(dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, `${JSON.stringify(updatedData, null, 2)}\n`, 'utf-8');
+  return targetPath;
 }
 
 /**
@@ -169,6 +210,53 @@ async function extractCredentialsFromBrowser(waitSeconds: number = 60, keepOpen:
     if (!keepOpen) {
       await browser.close();
     }
+  }
+}
+
+export async function exportCookiesToOpenClawSecrets(options?: {
+  credsPath?: string;
+  loginUrl?: string;
+  userDataDir?: string;
+}): Promise<{ filePath: string; cookiesLength: number }> {
+  const loginUrl = options?.loginUrl || 'https://notebooklm.google.com/';
+  const userDataDir = options?.userDataDir?.trim() || process.env.NOTEBOOKLM_PLAYWRIGHT_PROFILE_DIR?.trim() || DEFAULT_PLAYWRIGHT_PROFILE_DIR;
+  console.log('\n🌐 Opening browser (visible mode) for manual NotebookLM login...\n');
+  console.log(`🗂️ Using persistent profile: ${userDataDir}\n`);
+
+  const context = await chromium.launchPersistentContext(userDataDir, {
+    headless: false,
+    userAgent: USER_AGENT,
+    viewport: { width: 1920, height: 1080 },
+  });
+
+  try {
+    const existingPage = context.pages()[0];
+    const page = existingPage || await context.newPage();
+    await page.goto(loginUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000,
+    });
+
+    await waitForEnter('Login is complete? Press Enter to capture cookies and save: ');
+
+    const cookies = await context.cookies();
+    const cookieString = cookies
+      .map(cookie => `${cookie.name}=${cookie.value}`)
+      .join('; ');
+
+    if (!cookieString || cookieString.length < 100) {
+      throw new Error('Cookie capture failed: cookie string is empty or too short.');
+    }
+
+    const filePath = await writeCookiesToOpenClawSecrets(cookieString, options?.credsPath);
+    console.log(`✓ Cookies saved to: ${filePath}`);
+
+    return {
+      filePath,
+      cookiesLength: cookieString.length,
+    };
+  } finally {
+    await context.close();
   }
 }
 
