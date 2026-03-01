@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { NotebookLMClient } from '../src/index.js';
-import { chromium, Browser } from 'playwright';
+import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import * as readline from 'readline';
 
 /**
@@ -65,6 +65,34 @@ process.stdout.write = originalStdoutWrite;
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36';
 const DEFAULT_OPENCLAW_CREDS_PATH = join(homedir(), '.openclaw', 'secrets', 'notebooklm-creds.json');
 const DEFAULT_PLAYWRIGHT_PROFILE_DIR = join(homedir(), '.openclaw', 'playwright', 'notebooklm-profile');
+const DEFAULT_NOTEBOOKLM_LOGIN_URL = 'https://notebooklm.google.com/';
+
+type SameSitePolicy = 'Strict' | 'Lax' | 'None';
+
+interface PlaywrightCookieParam {
+  name: string;
+  value: string;
+  url?: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: SameSitePolicy;
+}
+
+interface OpenClawNotebookLMCreds {
+  cookies?: string;
+  playwrightCookies?: PlaywrightCookieParam[];
+  [key: string]: unknown;
+}
+
+export interface NotebookLMBrowserSession {
+  context: BrowserContext;
+  page: Page;
+  loginResolution: 'persistent-session' | 'saved-cookies' | 'manual-login';
+  credsPath: string;
+}
 
 export function resolveDevAuthUser(): string {
   const rawAuthUser = process.env.NOTEBOOKLM_DEV_AUTHUSER?.trim();
@@ -93,30 +121,209 @@ function getOpenClawCredsPath(explicitPath?: string): string {
   return DEFAULT_OPENCLAW_CREDS_PATH;
 }
 
-async function writeCookiesToOpenClawSecrets(cookies: string, explicitPath?: string): Promise<string> {
+async function readOpenClawCreds(explicitPath?: string): Promise<{ path: string; data: OpenClawNotebookLMCreds }> {
   const targetPath = getOpenClawCredsPath(explicitPath);
-  let currentData: Record<string, unknown> = {};
-
   try {
     const existingText = await readFile(targetPath, 'utf-8');
     const parsed = JSON.parse(existingText);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      currentData = parsed as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`Credentials file must contain a JSON object at ${targetPath}`);
     }
+    return {
+      path: targetPath,
+      data: parsed as OpenClawNotebookLMCreds,
+    };
   } catch (error: any) {
-    if (error?.code !== 'ENOENT') {
-      throw new Error(`Failed to read existing credentials file at ${targetPath}: ${error?.message || String(error)}`);
+    if (error?.code === 'ENOENT') {
+      return {
+        path: targetPath,
+        data: {},
+      };
+    }
+    throw new Error(`Failed to read credentials file at ${targetPath}: ${error?.message || String(error)}`);
+  }
+}
+
+function cookieStringFromCookies(cookies: Array<{ name: string; value: string }>): string {
+  return cookies
+    .map(cookie => `${cookie.name}=${cookie.value}`)
+    .join('; ');
+}
+
+function normalizeSameSite(value: unknown): SameSitePolicy | undefined {
+  if (value === 'Strict' || value === 'Lax' || value === 'None') {
+    return value;
+  }
+  return undefined;
+}
+
+function sanitizeCookieParam(raw: unknown): PlaywrightCookieParam | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+
+  const candidate = raw as Record<string, unknown>;
+  const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
+  const value = typeof candidate.value === 'string' ? candidate.value : '';
+  if (!name) {
+    return null;
+  }
+
+  const sanitized: PlaywrightCookieParam = {
+    name,
+    value,
+    path: typeof candidate.path === 'string' && candidate.path.trim() ? candidate.path : '/',
+    secure: typeof candidate.secure === 'boolean' ? candidate.secure : true,
+    httpOnly: typeof candidate.httpOnly === 'boolean' ? candidate.httpOnly : false,
+  };
+
+  if (typeof candidate.expires === 'number') {
+    sanitized.expires = candidate.expires;
+  }
+  const sameSite = normalizeSameSite(candidate.sameSite);
+  if (sameSite) {
+    sanitized.sameSite = sameSite;
+  }
+
+  if (typeof candidate.url === 'string' && candidate.url.startsWith('http')) {
+    sanitized.url = candidate.url;
+    return sanitized;
+  }
+
+  if (typeof candidate.domain === 'string' && candidate.domain.trim()) {
+    sanitized.domain = candidate.domain.trim();
+    return sanitized;
+  }
+
+  sanitized.url = DEFAULT_NOTEBOOKLM_LOGIN_URL;
+  return sanitized;
+}
+
+function parseCookieStringToCookieParams(cookieString: string): PlaywrightCookieParam[] {
+  return cookieString
+    .split(';')
+    .map(pair => pair.trim())
+    .filter(Boolean)
+    .map(pair => {
+      const separatorIndex = pair.indexOf('=');
+      if (separatorIndex <= 0) {
+        return null;
+      }
+      const name = pair.slice(0, separatorIndex).trim();
+      const value = pair.slice(separatorIndex + 1).trim();
+      if (!name) {
+        return null;
+      }
+      return sanitizeCookieParam({
+        name,
+        value,
+        url: DEFAULT_NOTEBOOKLM_LOGIN_URL,
+      });
+    })
+    .filter((cookie): cookie is PlaywrightCookieParam => cookie !== null);
+}
+
+function extractCookieParamsFromCreds(data: OpenClawNotebookLMCreds): PlaywrightCookieParam[] {
+  if (Array.isArray(data.playwrightCookies) && data.playwrightCookies.length > 0) {
+    const sanitized = data.playwrightCookies
+      .map(cookie => sanitizeCookieParam(cookie))
+      .filter((cookie): cookie is PlaywrightCookieParam => cookie !== null);
+    if (sanitized.length > 0) {
+      return sanitized;
     }
   }
 
-  const updatedData = {
+  if (typeof data.cookies === 'string' && data.cookies.trim()) {
+    return parseCookieStringToCookieParams(data.cookies);
+  }
+
+  return [];
+}
+
+async function writeCookiesToOpenClawSecrets(
+  cookies: string,
+  playwrightCookies: PlaywrightCookieParam[],
+  explicitPath?: string
+): Promise<string> {
+  const { path: targetPath, data: currentData } = await readOpenClawCreds(explicitPath);
+  const updatedData: OpenClawNotebookLMCreds = {
     ...currentData,
     cookies,
+    playwrightCookies,
+    updatedAt: new Date().toISOString(),
   };
 
   await mkdir(dirname(targetPath), { recursive: true });
   await writeFile(targetPath, `${JSON.stringify(updatedData, null, 2)}\n`, 'utf-8');
   return targetPath;
+}
+
+function isGoogleLoginUrl(url: string): boolean {
+  return url.includes('accounts.google.com') || url.includes('ServiceLogin');
+}
+
+async function isNotebookLMAuthenticated(page: Page, loginUrl: string): Promise<boolean> {
+  await page.goto(loginUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000,
+  });
+  await page.waitForTimeout(1200);
+
+  const currentUrl = page.url();
+  if (isGoogleLoginUrl(currentUrl)) {
+    return false;
+  }
+
+  const hasAuthToken = await page.evaluate(() => {
+    const wizData = (window as any)?.WIZ_global_data;
+    const token = wizData?.SNlM0e;
+    return typeof token === 'string' && token.length > 10;
+  }).catch(() => false);
+  if (hasAuthToken) {
+    return true;
+  }
+
+  const hasGoogleSignInLink = await page
+    .locator('a[href*="accounts.google.com"]')
+    .first()
+    .isVisible()
+    .catch(() => false);
+
+  return !hasGoogleSignInLink;
+}
+
+async function applySavedCookiesIfAvailable(
+  context: BrowserContext,
+  explicitPath?: string
+): Promise<{ applied: boolean; count: number; path: string }> {
+  const { path: credsPath, data } = await readOpenClawCreds(explicitPath);
+  const cookieParams = extractCookieParamsFromCreds(data);
+  if (cookieParams.length === 0) {
+    return { applied: false, count: 0, path: credsPath };
+  }
+
+  await context.addCookies(cookieParams);
+  return { applied: true, count: cookieParams.length, path: credsPath };
+}
+
+async function persistContextCookies(
+  context: BrowserContext,
+  explicitPath?: string
+): Promise<{ path: string; cookiesLength: number }> {
+  const cookies = await context.cookies();
+  const cookieString = cookieStringFromCookies(cookies);
+  if (!cookieString || cookieString.length < 100) {
+    throw new Error('Cookie capture failed: cookie string is empty or too short.');
+  }
+
+  const serializedCookies = cookies
+    .map(cookie => sanitizeCookieParam(cookie))
+    .filter((cookie): cookie is PlaywrightCookieParam => cookie !== null);
+  const filePath = await writeCookiesToOpenClawSecrets(cookieString, serializedCookies, explicitPath);
+  return {
+    path: filePath,
+    cookiesLength: cookieString.length,
+  };
 }
 
 /**
@@ -213,50 +420,91 @@ async function extractCredentialsFromBrowser(waitSeconds: number = 60, keepOpen:
   }
 }
 
-export async function exportCookiesToOpenClawSecrets(options?: {
+export async function createAuthenticatedNotebookLMBrowserSession(options?: {
   credsPath?: string;
   loginUrl?: string;
   userDataDir?: string;
-}): Promise<{ filePath: string; cookiesLength: number }> {
-  const loginUrl = options?.loginUrl || 'https://notebooklm.google.com/';
-  const userDataDir = options?.userDataDir?.trim() || process.env.NOTEBOOKLM_PLAYWRIGHT_PROFILE_DIR?.trim() || DEFAULT_PLAYWRIGHT_PROFILE_DIR;
-  console.log('\n🌐 Opening browser (visible mode) for manual NotebookLM login...\n');
-  console.log(`🗂️ Using persistent profile: ${userDataDir}\n`);
+  headless?: boolean;
+}): Promise<NotebookLMBrowserSession> {
+  const loginUrl = options?.loginUrl || DEFAULT_NOTEBOOKLM_LOGIN_URL;
+  const userDataDir =
+    options?.userDataDir?.trim() ||
+    process.env.NOTEBOOKLM_PLAYWRIGHT_PROFILE_DIR?.trim() ||
+    DEFAULT_PLAYWRIGHT_PROFILE_DIR;
 
   const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: false,
+    headless: options?.headless ?? false,
     userAgent: USER_AGENT,
     viewport: { width: 1920, height: 1080 },
   });
 
   try {
-    const existingPage = context.pages()[0];
-    const page = existingPage || await context.newPage();
-    await page.goto(loginUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: 60000,
-    });
+    const page = context.pages()[0] || await context.newPage();
+    let loginResolution: NotebookLMBrowserSession['loginResolution'] = 'manual-login';
+    let credsPath = getOpenClawCredsPath(options?.credsPath);
 
-    await waitForEnter('Login is complete? Press Enter to capture cookies and save: ');
+    if (await isNotebookLMAuthenticated(page, loginUrl)) {
+      loginResolution = 'persistent-session';
+    } else {
+      const restored = await applySavedCookiesIfAvailable(context, options?.credsPath);
+      credsPath = restored.path;
 
-    const cookies = await context.cookies();
-    const cookieString = cookies
-      .map(cookie => `${cookie.name}=${cookie.value}`)
-      .join('; ');
+      if (restored.applied) {
+        console.log(`Loaded ${restored.count} saved cookie(s) from ${restored.path}`);
+      }
 
-    if (!cookieString || cookieString.length < 100) {
-      throw new Error('Cookie capture failed: cookie string is empty or too short.');
+      if (restored.applied && await isNotebookLMAuthenticated(page, loginUrl)) {
+        loginResolution = 'saved-cookies';
+      } else {
+        console.log('\nSaved cookies are missing or expired. Manual login is required.\n');
+        await waitForEnter('Login is complete? Press Enter to continue: ');
+        if (!await isNotebookLMAuthenticated(page, loginUrl)) {
+          throw new Error('Manual login verification failed. Please complete NotebookLM login and try again.');
+        }
+        loginResolution = 'manual-login';
+      }
     }
 
-    const filePath = await writeCookiesToOpenClawSecrets(cookieString, options?.credsPath);
-    console.log(`✓ Cookies saved to: ${filePath}`);
+    const persisted = await persistContextCookies(context, options?.credsPath);
+    credsPath = persisted.path;
+    console.log(`Updated cookies at: ${credsPath}`);
 
     return {
-      filePath,
+      context,
+      page,
+      loginResolution,
+      credsPath,
+    };
+  } catch (error) {
+    await context.close();
+    throw error;
+  }
+}
+
+export async function exportCookiesToOpenClawSecrets(options?: {
+  credsPath?: string;
+  loginUrl?: string;
+  userDataDir?: string;
+}): Promise<{ filePath: string; cookiesLength: number; loginResolution: NotebookLMBrowserSession['loginResolution'] }> {
+  console.log('\n🌐 Opening browser (visible mode) for NotebookLM session bootstrap...\n');
+
+  const session = await createAuthenticatedNotebookLMBrowserSession({
+    credsPath: options?.credsPath,
+    loginUrl: options?.loginUrl,
+    userDataDir: options?.userDataDir,
+    headless: false,
+  });
+  try {
+    const cookies = await session.context.cookies();
+    const cookieString = cookieStringFromCookies(cookies);
+
+    return {
+      filePath: session.credsPath,
       cookiesLength: cookieString.length,
+      loginResolution: session.loginResolution,
     };
   } finally {
-    await context.close();
+    await session.context.close();
   }
 }
 

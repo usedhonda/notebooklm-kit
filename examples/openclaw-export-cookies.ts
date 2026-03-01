@@ -5,6 +5,7 @@ async function main() {
     const result = await exportCookiesToOpenClawSecrets();
     console.log(`\nSaved cookies to ${result.filePath}`);
     console.log(`Cookie length: ${result.cookiesLength}`);
+    console.log(`Login resolution: ${result.loginResolution}`);
   } catch (error) {
     handleError(error, 'Failed to export NotebookLM cookies');
   }
