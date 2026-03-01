@@ -1840,7 +1840,7 @@ export class ArtifactsService {
     
     // Build the base structure: [null, null, type, sourceIds, ...nulls, customization]
     // For Quiz/Flashcards: array should have exactly 10 elements (0-9) per curl request
-    // For Slides/Infographics: array needs 16 elements (0-15) for customization at index 15
+    // For Slides/Infographics: array needs 17 elements (0-16) for customization at index 16
     // For Audio: array needs at least 7 elements (0-6) for customization at index 6
     // For Video: array needs at least 9 elements (0-8) for customization at index 8
     // For Report: array needs exactly 8 elements (0-7) for customization at index 7 (NOT extended!)
@@ -1868,9 +1868,10 @@ export class ArtifactsService {
         null,  // Index 10
         null,  // Index 11
         null,  // Index 12
-        null,  // Index 13 (Slides customization goes here)
+        null,  // Index 13
         null,  // Index 14
         null,  // Index 15
+        null,  // Index 16 (Slides customization goes here)
       );
     }
     
@@ -1964,7 +1965,7 @@ export class ArtifactsService {
     // Add customization based on artifact type
     // Note: Slide decks, Audio, and Video ALWAYS need customization array set, even with defaults
     if (artifactType === ArtifactType.SLIDE_DECK) {
-      // Slides customization at index 13: [[instructions, language, format, length]]
+      // Slides customization at index 16: [[instructions, language, format, length]]
       // Structure from mm4.txt and mm6.txt: [[null,"en",2,3]] or [["something something","en",2,3]]
       // Always set customization array, even if no customization object provided
       const slideCustom = customization as SlideDeckCustomization | undefined;
@@ -1977,7 +1978,7 @@ export class ArtifactsService {
         effectiveSlideLanguage
       );
       
-      (args[2] as any[])[13] = [[
+      (args[2] as any[])[16] = [[
         slideInstructions, // Description/instructions
         effectiveSlideLanguage, // Language (default: notebook's default language)
         format, // Format (2=presenter, 3=detailed deck)
