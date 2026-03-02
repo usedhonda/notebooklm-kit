@@ -44,6 +44,28 @@ export enum ArtifactState {
 }
 
 /**
+ * Named slide format values used by NotebookLM slide customization.
+ *
+ * - `DETAILED` = 1 (UI: 「詳細なスライド」)
+ * - `PRESENTER` = 2 (UI: 「プレゼンターのスライド」)
+ */
+export enum SlideDeckFormat {
+  DETAILED = 1,
+  PRESENTER = 2,
+}
+
+/**
+ * Named slide length values used by NotebookLM slide customization.
+ *
+ * - `SHORT` = 1 (UI: 「短め」)
+ * - `DEFAULT` = 3 (UI: 「デフォルト」)
+ */
+export enum SlideDeckLength {
+  SHORT = 1,
+  DEFAULT = 3,
+}
+
+/**
  * Artifact
  */
 export interface Artifact {
@@ -113,14 +135,24 @@ export interface FlashcardCustomization {
  * Slide deck customization options
  */
 export interface SlideDeckCustomization {
-  /** Format: 2=Presenter slides, 3=Detailed deck (default: 2) */
-  format?: 2 | 3;
+  /**
+   * Slide format.
+   * - `SlideDeckFormat.DETAILED` / `'detailed'` / `1` = Detailed deck (default)
+   * - `SlideDeckFormat.PRESENTER` / `'presenter'` / `2` = Presenter slides
+   * - `3` is accepted as a legacy alias and mapped to detailed
+   */
+  format?: SlideDeckFormat | 'detailed' | 'presenter' | 1 | 2 | 3;
   
   /** Language code (use NotebookLMLanguage enum or ISO 639-1 code, e.g., 'en') */
   language?: string;
   
-  /** Length: 1=Short (5-10 slides), 2=Default (10-15 slides) (default: 2) */
-  length?: 1 | 2;
+  /**
+   * Slide length.
+   * - `SlideDeckLength.SHORT` / `'short'` / `1` = Short
+   * - `SlideDeckLength.DEFAULT` / `'default'` / `3` = Default (10-15 slides, default)
+   * - `2` is accepted as a legacy alias and mapped to default
+   */
+  length?: SlideDeckLength | 'short' | 'default' | 1 | 2 | 3;
 
   /** Direct equivalent of the slide customization textarea ("作成するスライドについて説明してください") */
   description?: string;

@@ -150,6 +150,8 @@ export type {
 export {
   ArtifactType,
   ArtifactState,
+  SlideDeckFormat,
+  SlideDeckLength,
 } from './types/artifact.js';
 
 // RPC methods (for advanced use)

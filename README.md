@@ -2114,18 +2114,24 @@ customization: {
 
 | Option | Values | Description | Default |
 |-------|--------|-------------|---------|
-| `format` | `2`, `3` | **2** = Presenter slides (concise, bullet points), **3** = Detailed deck (comprehensive, full content) | `2` |
-| `length` | `1`, `2` | **1** = Short (5-10 slides), **2** = Default (10-15 slides) | `2` |
+| `format` | `1`, `2`, `'detailed'`, `'presenter'` | **1 / `'detailed'`** = Detailed deck, **2 / `'presenter'`** = Presenter slides | `1` (`detailed`) |
+| `length` | `1`, `3`, `'short'`, `'default'` | **1 / `'short'`** = Short (5-10 slides), **3 / `'default'`** = Default (10-15 slides) | `3` (`default`) |
 | `language` | `string` | Language code (e.g., `'en'`, `'hi'`, `'es'`). Use `NotebookLMLanguage` enum for type safety. Supports 80+ languages. | `'en'` |
+
+Named constants are available:
+- `SlideDeckFormat.DETAILED` (`1`), `SlideDeckFormat.PRESENTER` (`2`)
+- `SlideDeckLength.SHORT` (`1`), `SlideDeckLength.DEFAULT` (`3`)
 
 Additional slide-only option in `CreateArtifactOptions`:
 - `slideDesignTemplate?: string` - Structured design template text. When present, SDK merges instructions in fixed order: language lock -> `instructions` -> `slideDesignTemplate`.
 
 **Example:**
 ```typescript
+import { SlideDeckFormat, SlideDeckLength } from 'notebooklm-kit'
+
 customization: {
-  format: 2, // Presenter slides (concise)
-  length: 2, // Default (10-15 slides)
+  format: SlideDeckFormat.DETAILED,
+  length: SlideDeckLength.DEFAULT,
   language: NotebookLMLanguage.ENGLISH,
 }
 
@@ -2347,8 +2353,8 @@ const slides = await sdk.artifacts.slide.create('notebook-id', {
   }),
   customization: {
     language: 'ja',
-    format: 2,
-    length: 2,
+    format: 'detailed',
+    length: 'default',
   },
 })
 

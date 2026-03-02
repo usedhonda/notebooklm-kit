@@ -115,9 +115,9 @@ export interface FlashcardCustomization {
 }
 
 export interface SlideDeckCustomization {
-  format?: 2 | 3;
+  format?: 1 | 2 | 3 | 'detailed' | 'presenter';
   language?: string;
-  length?: 1 | 2;
+  length?: 1 | 2 | 3 | 'short' | 'default';
   description?: string;
   summary?: string;
   audience?: string;
@@ -1122,15 +1122,16 @@ export class ArtifactsService {
    * - `instructions` (string, optional): Custom instructions for topic focus
    * 
    * **Slide Deck (`SlideDeckCustomization`):**
-   * - `customization.format` (2 | 3, optional): Presentation format
-   *   - `2` = Presenter slides (default)
-   *   - `3` = Detailed deck
+   * - `customization.format` (1 | 2 | 3 | 'detailed' | 'presenter', optional): Presentation format
+   *   - `1` or `'detailed'` = Detailed deck (UI default)
+   *   - `2` or `'presenter'` = Presenter slides
+   *   - `3` = Legacy alias mapped to Detailed deck
    * - `customization.language` (string, optional): Language code (use NotebookLMLanguage enum or ISO 639-1 code, e.g., 'en')
  *   - NotebookLM supports 80+ languages for slide decks
-   * - `customization.length` (1 | 2 | 3, optional): Length preference
-   *   - `1` = Short
-   *   - `2` = Default (default)
-   *   - `3` = Long
+   * - `customization.length` (1 | 2 | 3 | 'short' | 'default', optional): Length preference
+   *   - `1` or `'short'` = Short
+   *   - `3` or `'default'` = Default (10-15 slides, UI default)
+   *   - `2` = Legacy alias mapped to Default
    * - `instructions` (string, optional): Used as description/theme for the presentation
    * 
    * **Infographic (`InfographicCustomization`):**
@@ -1268,9 +1269,9 @@ export class ArtifactsService {
    *   title: 'Quarterly Report',
    *   instructions: 'Focus on revenue and growth metrics',
    *   customization: {
-   *     format: 3, // Detailed deck
+   *     format: 'detailed', // Detailed deck (or SlideDeckFormat.DETAILED)
    *     language: NotebookLMLanguage.SPANISH, // or 'es'
-   *     length: 2, // Default
+   *     length: 'default', // Default length (or SlideDeckLength.DEFAULT)
    *   },
    * });
    * 
@@ -1289,7 +1290,7 @@ export class ArtifactsService {
    *   customization: {
    *     format: 0, // Deep dive
    *     language: NotebookLMLanguage.FRENCH, // or 'fr' - supports 80+ languages
-   *     length: 2, // Default
+   *     length: 'default', // Default
    *   },
    * });
    * 
@@ -2070,12 +2071,14 @@ export class ArtifactsService {
     // Note: Slide decks, Audio, and Video ALWAYS need customization array set, even with defaults
     if (artifactType === ArtifactType.SLIDE_DECK) {
       // Slides customization at index 16: [[instructions, language, format, length]]
-      // Structure from mm4.txt and mm6.txt: [[null,"en",2,3]] or [["something something","en",2,3]]
+      // UI-observed structure: [[null,"ja",1,3]]
+      // - format: 1=Detailed, 2=Presenter
+      // - length: 1=Short, 3=Default
       // Always set customization array, even if no customization object provided
       const slideCustom = customization as SlideDeckCustomization | undefined;
       const effectiveSlideLanguage = slideCustom?.language || defaultLanguage;
-      const format = slideCustom?.format ?? 2; // 2=Presenter, 3=Detailed deck
-      const length = slideCustom?.length ?? 2; // 1=Short (5-10 slides), 2=Default (10-15 slides)
+      const format = this.resolveSlideDeckFormat(slideCustom?.format); // 1=Detailed (default), 2=Presenter
+      const length = this.resolveSlideDeckLength(slideCustom?.length); // 1=Short, 3=Default (10-15 slides)
       const slideInstructions = this.buildSlideInstructions(
         instructions,
         slideDesignTemplate,
@@ -2086,8 +2089,8 @@ export class ArtifactsService {
       (args[2] as any[])[16] = [[
         slideInstructions, // Description/instructions
         effectiveSlideLanguage, // Language (default: notebook's default language)
-        format, // Format (2=presenter, 3=detailed deck)
-        length, // Length (1=Short, 2=Default)
+        format, // Format (1=Detailed, 2=Presenter)
+        length, // Length (1=Short, 3=Default)
       ]];
     } else if (artifactType === ArtifactType.AUDIO) {
       // Audio customization at index 8: [null, [null, format, null, [sourceIdsFlat], language, null, length]]
@@ -2290,6 +2293,42 @@ export class ArtifactsService {
     );
     
     return this.parseArtifactResponse(response);
+  }
+
+  private resolveSlideDeckFormat(format?: SlideDeckCustomization['format']): number {
+    // Accept readable names and keep backward compatibility with previous numeric mapping.
+    if (typeof format === 'string') {
+      const normalized = format.trim().toLowerCase();
+      if (normalized === 'presenter') {
+        return 2;
+      }
+      return 1; // detailed
+    }
+
+    if (format === 2) {
+      return 2; // presenter
+    }
+
+    // Detailed is the current UI default. Legacy "3" is mapped to detailed.
+    return 1;
+  }
+
+  private resolveSlideDeckLength(length?: SlideDeckCustomization['length']): number {
+    // Accept readable names and keep backward compatibility with previous numeric mapping.
+    if (typeof length === 'string') {
+      const normalized = length.trim().toLowerCase();
+      if (normalized === 'short') {
+        return 1;
+      }
+      return 3; // default
+    }
+
+    if (length === 1) {
+      return 1; // short
+    }
+
+    // Default length is currently represented as 3. Legacy "2" is mapped to default.
+    return 3;
   }
 
   private buildSlideInstructions(
