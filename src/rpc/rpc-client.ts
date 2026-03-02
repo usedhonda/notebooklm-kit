@@ -58,11 +58,12 @@ export class RPCClient {
         ...normalizedHeaders,
       },
       urlParams: {
-        // Update to January 2025 build version
+        // Stale fallback values — overridden at runtime by page-metadata extraction
+        // in NotebookLMClient.connect(). Kept here as last-resort defaults.
         'bl': 'boq_labs-tailwind-frontend_20250129.00_p0',
         'f.sid': '-7121977511756781186',
         'hl': resolvedLocale.hl,
-        'authuser': config.authUser || '0', // Default: 0, configurable for multi-account support
+        'authuser': config.authUser || '0',
         ...config.urlParams,
       },
       debug: config.debug,

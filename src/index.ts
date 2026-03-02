@@ -162,8 +162,12 @@ export type { RPCClientConfig } from './rpc/rpc-client.js';
 // Batch execute client (for advanced use)
 export { BatchExecuteClient } from './utils/batch-execute.js';
 
+// Page metadata extraction (for advanced use — bl / f.sid rotation)
+export { extractPageMetadata } from './utils/page-metadata.js';
+export type { PageMetadata } from './utils/page-metadata.js';
+
 // Error utilities (for advanced use)
-export { 
+export {
   ErrorType,
   APIError,
   getErrorCode,
