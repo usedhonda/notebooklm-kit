@@ -488,8 +488,8 @@ export class NotebooksService {
         responseStr = JSON.stringify(response);
       }
       
-      // Enable debug mode for notebook list parsing (can be disabled with NOTEBOOKLM_DEBUG=false)
-      const debugMode = process.env.NOTEBOOKLM_DEBUG !== 'false';
+      // Enable debug mode for notebook list parsing only when explicitly requested
+      const debugMode = process.env.NOTEBOOKLM_DEBUG === 'true';
       const parser = createChunkedParser(responseStr, debugMode);
       const projects = parser.parseListProjectsResponse();
       return projects.map((p: any) => ({
