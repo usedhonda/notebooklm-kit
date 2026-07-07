@@ -3730,31 +3730,36 @@ function parseAudioDownloadResponse(response: any, audioId?: string): string | n
   return findUrl(response);
 }
 
-function downloadAudioFromUrl(url: string, cookies: string): Promise<Uint8Array> {
+interface HttpDownloadOptions {
+  headers: Record<string, string>;
+  failedMessage: string;
+  responseErrorMessage: string;
+  requestErrorMessage?: string;
+  timeoutMessage: string;
+  timeoutMs?: number;
+  onRedirect: (location: string, currentUrl: URL) => Promise<Uint8Array>;
+}
+
+function httpDownload(url: string, options: HttpDownloadOptions): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const isHttps = urlObj.protocol === 'https:';
     const httpModule = isHttps ? https : http;
-    const options: any = {
+    const requestOptions: any = {
       hostname: urlObj.hostname,
       port: urlObj.port || (isHttps ? 443 : 80),
       path: urlObj.pathname + urlObj.search,
       method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
-        'Cookie': cookies,
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
+      headers: options.headers,
     };
-    const req = httpModule.request(options, (res) => {
+    const req = httpModule.request(requestOptions, (res) => {
       if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          return downloadAudioFromUrl(res.headers.location, cookies)
+          return options.onRedirect(res.headers.location, urlObj)
             .then(resolve)
             .catch(reject);
         }
-        reject(new NotebookLMError(`Failed to download audio: HTTP ${res.statusCode}`));
+        reject(new NotebookLMError(`${options.failedMessage}: HTTP ${res.statusCode}`));
         return;
       }
       const chunks: Buffer[] = [];
@@ -3762,17 +3767,35 @@ function downloadAudioFromUrl(url: string, cookies: string): Promise<Uint8Array>
         chunks.push(chunk);
       });
       res.on('end', () => {
-        const audioData = Buffer.concat(chunks);
-        resolve(new Uint8Array(audioData));
+        resolve(new Uint8Array(Buffer.concat(chunks)));
       });
       res.on('error', (error: Error) => {
-        reject(new NotebookLMError(`Error downloading audio: ${error.message}`));
+        reject(new NotebookLMError(`${options.responseErrorMessage}: ${error.message}`));
       });
     });
     req.on('error', (error: Error) => {
-      reject(new NotebookLMError(`Request error: ${error.message}`));
+      reject(new NotebookLMError(`${options.requestErrorMessage || 'Request error'}: ${error.message}`));
+    });
+    req.setTimeout(options.timeoutMs || 30000, () => {
+      req.destroy();
+      reject(new NotebookLMError(options.timeoutMessage));
     });
     req.end();
+  });
+}
+
+function downloadAudioFromUrl(url: string, cookies: string): Promise<Uint8Array> {
+  return httpDownload(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+      'Cookie': cookies,
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+    failedMessage: 'Failed to download audio',
+    responseErrorMessage: 'Error downloading audio',
+    timeoutMessage: 'Request timeout',
+    onRedirect: (location) => downloadAudioFromUrl(location, cookies),
   });
 }
 
@@ -4785,48 +4808,29 @@ async function downloadWithNodeHttp(
   cookies?: string,
   authUser?: string
 ): Promise<Uint8Array | ArrayBuffer> {
-  return new Promise((resolve, reject) => {
-    const urlObj = new URL(url);
-    const client = urlObj.protocol === 'https:' ? https : http;
-    const headers: Record<string, string> = {
-      'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-      'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,en-US;q=0.7',
-      'Referer': 'https://notebooklm.google.com/',
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
-      'sec-fetch-dest': 'image',
-      'sec-fetch-mode': 'no-cors',
-      'sec-fetch-site': 'cross-site',
-    };
-    if (cookies && cookies.trim()) {
-      headers['Cookie'] = cookies;
-      headers['sec-fetch-storage-access'] = 'active';
-    }
-    const options = {
-      hostname: urlObj.hostname,
-      port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
-      path: urlObj.pathname + urlObj.search,
-      method: 'GET',
-      headers,
-    };
-    const req = client.request(options, (res: any) => {
-      if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          return downloadImageFromUrl(res.headers.location, cookies || '', authUser).then(resolve).catch(reject);
-        }
-        reject(new NotebookLMError(`Failed to download image: HTTP ${res.statusCode}`));
-        return;
-      }
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => resolve(new Uint8Array(Buffer.concat(chunks))));
-      res.on('error', (error: Error) => reject(new NotebookLMError(`Error downloading image: ${error.message}`)));
-    });
-    req.on('error', (error: Error) => reject(new NotebookLMError(`Request error: ${error.message}`)));
-    req.setTimeout(30000, () => {
-      req.destroy();
-      reject(new NotebookLMError('Request timeout'));
-    });
-    req.end();
+  const headers: Record<string, string> = {
+    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+    'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,en-US;q=0.7',
+    'Referer': 'https://notebooklm.google.com/',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
+    'sec-fetch-dest': 'image',
+    'sec-fetch-mode': 'no-cors',
+    'sec-fetch-site': 'cross-site',
+  };
+  if (cookies && cookies.trim()) {
+    headers['Cookie'] = cookies;
+    headers['sec-fetch-storage-access'] = 'active';
+  }
+
+  return httpDownload(url, {
+    headers,
+    failedMessage: 'Failed to download image',
+    responseErrorMessage: 'Error downloading image',
+    timeoutMessage: 'Request timeout',
+    onRedirect: async (location) => {
+      const data = await downloadImageFromUrl(location, cookies || '', authUser);
+      return data instanceof Uint8Array ? data : new Uint8Array(data);
+    },
   });
 }
 
@@ -5384,46 +5388,23 @@ function matchesContributionExtension(url: string, extension: 'pdf' | 'pptx'): b
 }
 
 function downloadFileFromUrl(url: string, cookies: string): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const urlObj = new URL(url);
-    const isHttps = urlObj.protocol === 'https:';
-    const httpModule = isHttps ? https : http;
-    const options: any = {
-      hostname: urlObj.hostname,
-      port: urlObj.port || (isHttps ? 443 : 80),
-      path: urlObj.pathname + urlObj.search,
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
-        'Cookie': cookies,
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'identity',
-        'Referer': 'https://notebooklm.google.com/',
-        'Origin': 'https://notebooklm.google.com',
-      },
-    };
-    const req = httpModule.request(options, (res) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        const location = res.headers.location;
-        const redirectUrl = location.startsWith('http') ? location : `${urlObj.protocol}//${urlObj.hostname}${location}`;
-        return downloadFileFromUrl(redirectUrl, cookies).then(resolve).catch(reject);
-      }
-      if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-        reject(new NotebookLMError(`Failed to download file: HTTP ${res.statusCode}`));
-        return;
-      }
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => resolve(new Uint8Array(Buffer.concat(chunks))));
-      res.on('error', (error: Error) => reject(new NotebookLMError(`Error downloading file: ${error.message}`)));
-    });
-    req.on('error', (error: Error) => reject(new NotebookLMError(`Request error: ${error.message}`)));
-    req.setTimeout(30000, () => {
-      req.destroy();
-      reject(new NotebookLMError('File download request timed out'));
-    });
-    req.end();
+  return httpDownload(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
+      'Cookie': cookies,
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'identity',
+      'Referer': 'https://notebooklm.google.com/',
+      'Origin': 'https://notebooklm.google.com',
+    },
+    failedMessage: 'Failed to download file',
+    responseErrorMessage: 'Error downloading file',
+    timeoutMessage: 'File download request timed out',
+    onRedirect: (location, currentUrl) => {
+      const redirectUrl = location.startsWith('http') ? location : `${currentUrl.protocol}//${currentUrl.hostname}${location}`;
+      return downloadFileFromUrl(redirectUrl, cookies);
+    },
   });
 }
 
@@ -6167,79 +6148,41 @@ function downloadVideoFromUrl(
   cookies: string,
   googleDomainCookies?: string
 ): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const urlObj = new URL(url);
-    const isHttps = urlObj.protocol === 'https:';
-    const httpModule = isHttps ? https : http;
-    
-    let finalCookies = cookies;
-    if (googleDomainCookies) {
-      const cookieMap = new Map<string, string>();
-      
-      googleDomainCookies.split(';').forEach(c => {
-        const [name, ...valueParts] = c.trim().split('=');
-        if (name && valueParts.length > 0) {
-          cookieMap.set(name, valueParts.join('='));
-        }
-      });
-      
-      cookies.split(';').forEach(c => {
-        const [name, ...valueParts] = c.trim().split('=');
-        if (name && valueParts.length > 0) {
-          cookieMap.set(name, valueParts.join('='));
-        }
-      });
-      
-      finalCookies = Array.from(cookieMap.entries())
-        .map(([name, value]) => `${name}=${value}`)
-        .join('; ');
-    }
-    
-    const options: any = {
-      hostname: urlObj.hostname,
-      port: urlObj.port || (isHttps ? 443 : 80),
-      path: urlObj.pathname + urlObj.search,
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
-        'Cookie': finalCookies,
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Range': 'bytes=0-',
-      },
-    };
-    
-    const req = httpModule.request(options, (res) => {
-      if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          return downloadVideoFromUrl(res.headers.location, cookies, googleDomainCookies)
-            .then(resolve)
-            .catch(reject);
-        }
-        reject(new NotebookLMError(`Failed to download video: HTTP ${res.statusCode}`));
-        return;
+  let finalCookies = cookies;
+  if (googleDomainCookies) {
+    const cookieMap = new Map<string, string>();
+
+    googleDomainCookies.split(';').forEach(c => {
+      const [name, ...valueParts] = c.trim().split('=');
+      if (name && valueParts.length > 0) {
+        cookieMap.set(name, valueParts.join('='));
       }
-      
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => {
-        chunks.push(chunk);
-      });
-      
-      res.on('end', () => {
-        const videoData = Buffer.concat(chunks);
-        resolve(new Uint8Array(videoData));
-      });
-      
-      res.on('error', (error: Error) => {
-        reject(new NotebookLMError(`Error downloading video: ${error.message}`));
-      });
     });
-    
-    req.on('error', (error: Error) => {
-      reject(new NotebookLMError(`Request error: ${error.message}`));
+
+    cookies.split(';').forEach(c => {
+      const [name, ...valueParts] = c.trim().split('=');
+      if (name && valueParts.length > 0) {
+        cookieMap.set(name, valueParts.join('='));
+      }
     });
-    
-    req.end();
+
+    finalCookies = Array.from(cookieMap.entries())
+      .map(([name, value]) => `${name}=${value}`)
+      .join('; ');
+  }
+
+  return httpDownload(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+      'Cookie': finalCookies,
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Range': 'bytes=0-',
+    },
+    failedMessage: 'Failed to download video',
+    responseErrorMessage: 'Error downloading video',
+    timeoutMessage: 'Request timeout',
+    onRedirect: (location) => downloadVideoFromUrl(location, cookies, googleDomainCookies),
   });
 }
 
