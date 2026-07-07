@@ -155,6 +155,58 @@ test('streaming parseFrame parses simple ASCII frames without network', () => {
   assert.equal(parsed.errorCode, 2);
 });
 
+test('streamChat keeps interleaved streams isolated', async () => {
+  const originalFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+  const controllers: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+  const streams = [0, 1].map(() => new ReadableStream<Uint8Array>({
+    start(controller) {
+      controllers.push(controller);
+    },
+  }));
+  let fetchCount = 0;
+
+  globalThis.fetch = (async () => new Response(streams[fetchCount++])) as typeof fetch;
+
+  try {
+    const client = new StreamingClient({
+      authToken: 'token',
+      cookies: 'cookie=value',
+    } as any);
+
+    const buildWireFrame = (text: string): string => {
+      const inner = JSON.stringify([[text, null, ['conv', text, 123], null, null, null, null, null, 2]]);
+      const frame = JSON.stringify([['wrb.fr', null, inner]]);
+      return `${frame.length}\n${frame}`;
+    };
+
+    const firstFrame = buildWireFrame('first');
+    const secondFrame = buildWireFrame('second');
+    const splitAt = firstFrame.indexOf('[[');
+
+    const firstStream = client.streamChat('notebook', 'prompt-a', [], 'conversation-a', null);
+    const secondStream = client.streamChat('notebook', 'prompt-b', [], 'conversation-b', null);
+    const firstNext = firstStream.next();
+
+    controllers[0].enqueue(encoder.encode(firstFrame.slice(0, splitAt)));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const secondNext = secondStream.next();
+    controllers[1].enqueue(encoder.encode(secondFrame));
+    controllers[1].close();
+    const secondResult = await secondNext;
+
+    controllers[0].enqueue(encoder.encode(firstFrame.slice(splitAt)));
+    controllers[0].close();
+    const firstResult = await firstNext;
+
+    assert.equal(firstResult.value?.text, 'first');
+    assert.equal(secondResult.value?.text, 'second');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('language helpers preserve exact supported-code lookup behavior', () => {
   assert.equal(getLanguageInfo(NotebookLMLanguage.JAPANESE)?.nativeName, '日本語');
   assert.equal(isLanguageSupported('ja'), true);
