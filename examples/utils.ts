@@ -66,6 +66,7 @@ const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 const DEFAULT_OPENCLAW_CREDS_PATH = join(homedir(), '.openclaw', 'secrets', 'notebooklm-creds.json');
 const DEFAULT_PLAYWRIGHT_PROFILE_DIR = join(homedir(), '.openclaw', 'playwright', 'notebooklm-profile');
 const DEFAULT_NOTEBOOKLM_LOGIN_URL = 'https://notebooklm.google.com/';
+const DEFAULT_GOOGLE_COOKIE_DOMAIN = '.google.com';
 
 type SameSitePolicy = 'Strict' | 'Lax' | 'None';
 
@@ -233,6 +234,30 @@ function sanitizeCookieParam(raw: unknown): PlaywrightCookieParam | null {
   return sanitized;
 }
 
+function notebookLMCookieScope(name: string): Pick<PlaywrightCookieParam, 'url' | 'domain' | 'path'> {
+  if (name.startsWith('__Host-')) {
+    return { url: DEFAULT_NOTEBOOKLM_LOGIN_URL, path: '/' };
+  }
+  return { domain: DEFAULT_GOOGLE_COOKIE_DOMAIN, path: '/' };
+}
+
+function normalizeCookieParamForAddCookies(cookie: PlaywrightCookieParam): PlaywrightCookieParam | null {
+  if (cookie.name.includes('\uFFFD') || cookie.value.includes('\uFFFD')) {
+    return null;
+  }
+
+  const normalized: PlaywrightCookieParam = {
+    ...cookie,
+    path: cookie.path || '/',
+  };
+
+  if (!normalized.url && !normalized.domain) {
+    Object.assign(normalized, notebookLMCookieScope(normalized.name));
+  }
+
+  return normalized;
+}
+
 function parseCookieStringToCookieParams(cookieString: string): PlaywrightCookieParam[] {
   return cookieString
     .split(';')
@@ -251,7 +276,7 @@ function parseCookieStringToCookieParams(cookieString: string): PlaywrightCookie
       return sanitizeCookieParam({
         name,
         value,
-        url: DEFAULT_NOTEBOOKLM_LOGIN_URL,
+        ...notebookLMCookieScope(name),
       });
     })
     .filter((cookie): cookie is PlaywrightCookieParam => cookie !== null);
@@ -332,12 +357,15 @@ async function applySavedCookiesIfAvailable(
 ): Promise<{ applied: boolean; count: number; path: string }> {
   const { path: credsPath, data } = await readOpenClawCreds(explicitPath);
   const cookieParams = extractCookieParamsFromCreds(data);
-  if (cookieParams.length === 0) {
+  const cookiesForContext = cookieParams
+    .map(cookie => normalizeCookieParamForAddCookies(cookie))
+    .filter((cookie): cookie is PlaywrightCookieParam => cookie !== null);
+  if (cookiesForContext.length === 0) {
     return { applied: false, count: 0, path: credsPath };
   }
 
-  await context.addCookies(cookieParams);
-  return { applied: true, count: cookieParams.length, path: credsPath };
+  await context.addCookies(cookiesForContext);
+  return { applied: true, count: cookiesForContext.length, path: credsPath };
 }
 
 async function persistContextCookies(
