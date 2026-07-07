@@ -59,7 +59,7 @@ async function ensureCredentialsDir(): Promise<void> {
 export async function saveCredentials(credentials: Credentials): Promise<void> {
   await ensureCredentialsDir();
   const credsPath = getCredentialsPath();
-  await fs.writeFile(credsPath, JSON.stringify(credentials, null, 2), 'utf-8');
+  await fs.writeFile(credsPath, JSON.stringify(credentials, null, 2), { encoding: 'utf-8', mode: 0o600 });
 }
 
 /**

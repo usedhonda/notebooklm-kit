@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
+import { saveCredentials } from '../src/auth/auth.ts';
 import { parseAuthToken } from '../src/auth/refresh.ts';
 import {
   formatReportAsHTML,
@@ -45,6 +49,21 @@ test('parseAuthToken splits token value and applies one hour expiry', () => {
   assert.equal(parsed.expiryTime.toISOString(), '2026-01-01T01:00:00.000Z');
   assert.throws(() => parseAuthToken('missing-timestamp'));
   assert.throws(() => parseAuthToken('token:not-a-number'));
+});
+
+test('saveCredentials writes credentials.json with owner-only permissions', async () => {
+  const originalCwd = process.cwd();
+  const dir = await mkdtemp(join(tmpdir(), 'notebooklm-kit-test-'));
+
+  try {
+    process.chdir(dir);
+    await saveCredentials({ authToken: 'token', cookies: 'cookie=value' });
+    const fileStat = await stat(join(dir, 'credentials.json'));
+    assert.equal(fileStat.mode & 0o777, 0o600);
+  } finally {
+    process.chdir(originalCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('locale resolution preserves config, env, system, and default precedence', () => {
