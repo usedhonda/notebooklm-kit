@@ -343,6 +343,7 @@ export class AutoRefreshManager {
     if (this.running) {
       throw new Error('Auto-refresh manager already running');
     }
+    this.running = true;
     
     const strategy = this.config.strategy || 'auto';
     const interval = this.config.interval || 10 * 60 * 1000;
@@ -373,8 +374,6 @@ export class AutoRefreshManager {
       }
       // Don't throw - allow refresh to continue and retry later
     }
-    
-    this.running = true;
     
     // Start expiration-based checking (if enabled in 'auto' or 'expiration' mode)
     if (strategy === 'expiration' || strategy === 'auto') {
@@ -523,4 +522,3 @@ export class AutoRefreshManager {
     return this.lastRefreshTime;
   }
 }
-

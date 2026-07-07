@@ -186,6 +186,7 @@ export class GenerationService {
         // Parse sources from response (similar to SourcesService.parseSourcesFromResponse)
         sourceIds = this.extractSourceIdsFromResponse(projectResponse);
       } catch (error) {
+        console.error('\n❌ Failed to fetch sources from notebook:', error);
         // If fetching sources fails, continue with empty array
         sourceIds = [];
       }

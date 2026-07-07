@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { saveCredentials } from '../src/auth/auth.ts';
-import { parseAuthToken } from '../src/auth/refresh.ts';
+import { AutoRefreshManager, parseAuthToken } from '../src/auth/refresh.ts';
 import {
   formatReportAsHTML,
   formatReportAsJSON,
@@ -64,6 +64,30 @@ test('saveCredentials writes credentials.json with owner-only permissions', asyn
   } finally {
     process.chdir(originalCwd);
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('AutoRefreshManager rejects concurrent start while initial refresh is pending', async () => {
+  const originalFetch = globalThis.fetch;
+  let resolveFetch: ((response: Response) => void) | undefined;
+  globalThis.fetch = (async () => new Promise<Response>((resolve) => {
+    resolveFetch = resolve;
+  })) as typeof fetch;
+
+  const manager = new AutoRefreshManager('SAPISID=sapisid-value;', {
+    gsessionId: 'gsession-id',
+    authToken: 'token:1767225600000',
+  });
+
+  try {
+    const firstStart = manager.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await assert.rejects(() => manager.start(), /already running/);
+    resolveFetch?.(new Response('[]', { status: 200 }));
+    await firstStart;
+  } finally {
+    manager.stop();
+    globalThis.fetch = originalFetch;
   }
 });
 
