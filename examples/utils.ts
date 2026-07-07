@@ -66,7 +66,7 @@ const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 const DEFAULT_OPENCLAW_CREDS_PATH = join(homedir(), '.openclaw', 'secrets', 'notebooklm-creds.json');
 const DEFAULT_PLAYWRIGHT_PROFILE_DIR = join(homedir(), '.openclaw', 'playwright', 'notebooklm-profile');
 const DEFAULT_NOTEBOOKLM_LOGIN_URL = 'https://notebooklm.google.com/';
-const DEFAULT_GOOGLE_COOKIE_DOMAIN = '.google.com';
+const DEFAULT_GOOGLE_COOKIE_DOMAIN = 'google.com';
 
 type SameSitePolicy = 'Strict' | 'Lax' | 'None';
 
@@ -192,6 +192,10 @@ function normalizeSameSite(value: unknown): SameSitePolicy | undefined {
   return undefined;
 }
 
+function normalizeCookieDomain(domain: string): string {
+  return domain.trim().replace(/^\./, '');
+}
+
 function sanitizeCookieParam(raw: unknown): PlaywrightCookieParam | null {
   if (!raw || typeof raw !== 'object') {
     return null;
@@ -207,7 +211,6 @@ function sanitizeCookieParam(raw: unknown): PlaywrightCookieParam | null {
   const sanitized: PlaywrightCookieParam = {
     name,
     value,
-    path: typeof candidate.path === 'string' && candidate.path.trim() ? candidate.path : '/',
     secure: typeof candidate.secure === 'boolean' ? candidate.secure : true,
     httpOnly: typeof candidate.httpOnly === 'boolean' ? candidate.httpOnly : false,
   };
@@ -226,17 +229,18 @@ function sanitizeCookieParam(raw: unknown): PlaywrightCookieParam | null {
   }
 
   if (typeof candidate.domain === 'string' && candidate.domain.trim()) {
-    sanitized.domain = candidate.domain.trim();
+    sanitized.domain = normalizeCookieDomain(candidate.domain);
+    sanitized.path = typeof candidate.path === 'string' && candidate.path.trim() ? candidate.path : '/';
     return sanitized;
   }
 
-  sanitized.url = DEFAULT_NOTEBOOKLM_LOGIN_URL;
+  Object.assign(sanitized, notebookLMCookieScope(name));
   return sanitized;
 }
 
 function notebookLMCookieScope(name: string): Pick<PlaywrightCookieParam, 'url' | 'domain' | 'path'> {
   if (name.startsWith('__Host-')) {
-    return { url: DEFAULT_NOTEBOOKLM_LOGIN_URL, path: '/' };
+    return { url: DEFAULT_NOTEBOOKLM_LOGIN_URL };
   }
   return { domain: DEFAULT_GOOGLE_COOKIE_DOMAIN, path: '/' };
 }
@@ -246,19 +250,29 @@ function normalizeCookieParamForAddCookies(cookie: PlaywrightCookieParam): Playw
     return null;
   }
 
-  const normalized: PlaywrightCookieParam = {
-    ...cookie,
-    path: cookie.path || '/',
-  };
+  if (cookie.name.startsWith('__Host-')) {
+    const { domain: _domain, path: _path, ...urlCookie } = cookie;
+    return { ...urlCookie, url: cookie.url || DEFAULT_NOTEBOOKLM_LOGIN_URL };
+  }
 
-  if (!normalized.url && !normalized.domain) {
+  const normalized: PlaywrightCookieParam = { ...cookie };
+
+  if (normalized.url) {
+    const { domain: _domain, path: _path, ...urlCookie } = normalized;
+    return urlCookie;
+  }
+
+  if (normalized.domain) {
+    normalized.domain = normalizeCookieDomain(normalized.domain);
+    normalized.path = normalized.path || '/';
+  } else {
     Object.assign(normalized, notebookLMCookieScope(normalized.name));
   }
 
   return normalized;
 }
 
-function parseCookieStringToCookieParams(cookieString: string): PlaywrightCookieParam[] {
+export function parseSavedCookieStringForAddCookies(cookieString: string): PlaywrightCookieParam[] {
   return cookieString
     .split(';')
     .map(pair => pair.trim())
@@ -279,7 +293,12 @@ function parseCookieStringToCookieParams(cookieString: string): PlaywrightCookie
         ...notebookLMCookieScope(name),
       });
     })
+    .map(cookie => cookie ? normalizeCookieParamForAddCookies(cookie) : null)
     .filter((cookie): cookie is PlaywrightCookieParam => cookie !== null);
+}
+
+function parseCookieStringToCookieParams(cookieString: string): PlaywrightCookieParam[] {
+  return parseSavedCookieStringForAddCookies(cookieString);
 }
 
 function extractCookieParamsFromCreds(data: OpenClawNotebookLMCreds): PlaywrightCookieParam[] {
