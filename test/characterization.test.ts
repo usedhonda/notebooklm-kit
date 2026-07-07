@@ -13,6 +13,7 @@ import {
   formatReportAsText,
   ArtifactsService,
 } from '../src/services/artifacts.ts';
+import { AddSourcesService, SourcesService } from '../src/services/sources.ts';
 import { ArtifactType } from '../src/types/artifact.ts';
 import {
   getLanguageInfo,
@@ -137,6 +138,23 @@ test('artifact helpers preserve API type mapping, CSV, and report formatting', (
   assert.match(formatReportAsText(report), /Daily Report\n=+\n\nSummary <unsafe>/);
   assert.match(formatReportAsHTML(report), /Summary &lt;unsafe&gt;/);
   assert.equal(formatReportAsJSON(report), JSON.stringify(report, null, 2));
+});
+
+test('sources helpers preserve source ID and YouTube detection behavior', async () => {
+  const sourceId = '12345678-1234-1234-1234-123456789abc';
+  const addSources = new AddSourcesService({
+    call: async () => [sourceId, [sourceId], { other: sourceId }],
+  } as any) as any;
+  const sources = new SourcesService({} as any) as any;
+
+  assert.equal(addSources.extractSourceId(JSON.stringify([[sourceId]])), sourceId);
+  assert.equal(sources.extractSourceId({ nested: [sourceId] }), sourceId);
+  assert.equal(addSources.isYouTubeURL('https://youtu.be/video-id'), true);
+  assert.equal(sources.isYouTubeURL('https://example.com/watch?v=video-id'), false);
+
+  assert.deepEqual(await addSources.batch('notebook', {
+    sources: [{ type: 'url', url: 'https://example.com' }],
+  }), [sourceId]);
 });
 
 test('chunked decoders parse simple ASCII wrb.fr frames', () => {

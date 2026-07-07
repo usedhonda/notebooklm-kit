@@ -342,8 +342,6 @@ export async function autoLogin(config: AuthConfig = {}): Promise<Credentials> {
     await saveCredentials(credentials);
     
     return credentials;
-  } catch (error) {
-    throw error;
   } finally {
     if (browser) {
       await browser.close();
@@ -401,4 +399,3 @@ export async function getCredentials(
     '  - Auto-login: GOOGLE_EMAIL, GOOGLE_PASSWORD (no 2FA)'
   );
 }
-
