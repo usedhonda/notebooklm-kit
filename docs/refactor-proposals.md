@@ -41,17 +41,16 @@ Non-goals for the current package line:
 
 ## D8: OpenStax Notebook Filter
 
-`notebooks.list()` contains a hard-coded filter for notebooks whose title includes `OpenStax's Biology`.
+`notebooks.list()` previously contained a hard-coded filter for notebooks whose title includes `OpenStax's Biology`.
 
-Recommendation:
+Resolution:
 
-- Remove the filter in a bug-fix release only after maintainer approval.
-- Add a fixture-based test that proves a notebook with that title is returned.
+- Removed the filter after Q1 approval in `f1e21e4`.
 - Mention the observable behavior change in release notes.
 
 Current status:
 
-- Not implemented because it changes observable behavior and requires Q1 approval.
+- Implemented. Keep this behavior covered by the notebook list characterization tests.
 
 ## credentials.json Storage Location
 

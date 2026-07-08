@@ -2528,52 +2528,7 @@ export class SourcesService {
     );
     
     const addedIds: string[] = [];
-    
-    // Handle JSON string response
-    let data = response;
-    if (typeof response === 'string') {
-      try {
-        data = JSON.parse(response);
-      } catch (e) {
-        // If parsing fails, use response as-is
-      }
-    }
-    
-    // Response structure: [[[[sourceId], title, [...metadata...], [null, 2]]]]
-    // Example: [[[[\"435170a5-...\"], \"Title\", [...], [null, 2]]]]
-    // We need to extract sourceId from the nested structure
-    
-    // Helper function to recursively find source IDs
-    const extractSourceIds = (arr: any): string[] => {
-      const ids: string[] = [];
-      
-      if (Array.isArray(arr)) {
-        for (const item of arr) {
-          if (Array.isArray(item)) {
-            // Check if first element is a UUID-like string (source ID)
-            if (item.length > 0 && typeof item[0] === 'string' && 
-                /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item[0])) {
-              ids.push(item[0]);
-            } else {
-              // Recursively search nested arrays
-              ids.push(...extractSourceIds(item));
-            }
-          } else if (typeof item === 'string' && 
-                     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item)) {
-            // Direct UUID string
-            ids.push(item);
-          }
-        }
-      }
-      
-      return ids;
-    };
-    
-    // Extract source IDs from the response
-    const extractedIds = extractSourceIds(data);
-    
-    // Remove duplicates and add to result
-    const uniqueIds = [...new Set(extractedIds)];
+    const uniqueIds = collectSourceIds(response, true);
     for (const sourceId of uniqueIds) {
       if (sourceId) {
         addedIds.push(sourceId);

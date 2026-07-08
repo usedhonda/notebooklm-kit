@@ -6,7 +6,7 @@
 import { BatchExecuteClient } from '../utils/batch-execute.js';
 import type { BatchExecuteConfig, RPCCall, RPCResponse } from '../types/common.js';
 import type { TransportLocaleSettings } from '../types/common.js';
-import { normalizeHeaderKeys, resolveTransportLocaleSettings } from '../utils/locale.js';
+import { normalizeHeaderKeys, normalizeLocaleTag, resolveTransportLocaleSettings } from '../utils/locale.js';
 
 /**
  * RPC client configuration
@@ -22,6 +22,41 @@ export interface RPCClientConfig {
   maxRetries?: number;
   retryDelay?: number;
   retryMaxDelay?: number;
+}
+
+function primaryAcceptLanguageLocale(acceptLanguage?: string): string | null {
+  const primary = acceptLanguage?.split(',')[0]?.split(';')[0]?.trim();
+  return normalizeLocaleTag(primary);
+}
+
+function hasOwnValue(record: Record<string, string> | undefined, key: string): boolean {
+  return Boolean(record && Object.prototype.hasOwnProperty.call(record, key));
+}
+
+function resolveActualTransportLocaleSettings(
+  resolvedLocale: TransportLocaleSettings,
+  batchConfig: BatchExecuteConfig,
+  normalizedHeaders: Record<string, string>,
+  configUrlParams?: Record<string, string>
+): TransportLocaleSettings {
+  const hl = batchConfig.urlParams['hl'] || resolvedLocale.hl;
+  const acceptLanguage = batchConfig.headers['accept-language'] || resolvedLocale.acceptLanguage;
+  const hasHlOverride = hasOwnValue(configUrlParams, 'hl');
+  const hasAcceptLanguageOverride = hasOwnValue(normalizedHeaders, 'accept-language');
+
+  let effectiveLocale = resolvedLocale.effectiveLocale;
+  if (hasAcceptLanguageOverride) {
+    effectiveLocale = primaryAcceptLanguageLocale(acceptLanguage) || normalizeLocaleTag(hl) || resolvedLocale.effectiveLocale;
+  } else if (hasHlOverride) {
+    effectiveLocale = normalizeLocaleTag(hl) || resolvedLocale.effectiveLocale;
+  }
+
+  return {
+    effectiveLocale,
+    localeSource: hasHlOverride || hasAcceptLanguageOverride ? 'config' : resolvedLocale.localeSource,
+    hl,
+    acceptLanguage,
+  };
 }
 
 /**
@@ -72,12 +107,12 @@ export class RPCClient {
       retryMaxDelay: config.retryMaxDelay,
     };
 
-    this.transportLocaleSettings = {
-      effectiveLocale: resolvedLocale.effectiveLocale,
-      localeSource: resolvedLocale.localeSource,
-      hl: batchConfig.urlParams['hl'] || resolvedLocale.hl,
-      acceptLanguage: batchConfig.headers['accept-language'] || resolvedLocale.acceptLanguage,
-    };
+    this.transportLocaleSettings = resolveActualTransportLocaleSettings(
+      resolvedLocale,
+      batchConfig,
+      normalizedHeaders,
+      config.urlParams
+    );
     
     this.batchClient = new BatchExecuteClient(batchConfig);
   }

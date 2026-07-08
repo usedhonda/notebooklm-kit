@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { saveCredentials } from '../src/auth/auth.ts';
 import { AutoRefreshManager, parseAuthToken } from '../src/auth/refresh.ts';
+import { RPCClient } from '../src/rpc/rpc-client.ts';
 import {
   formatReportAsHTML,
   formatReportAsJSON,
@@ -92,6 +93,23 @@ test('AutoRefreshManager rejects concurrent start while initial refresh is pendi
   }
 });
 
+test('AutoRefreshManager resets running when expiration strategy start fails early', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('[]', { status: 200 })) as typeof fetch;
+  const manager = new AutoRefreshManager('SAPISID=sapisid-value;', {
+    strategy: 'expiration',
+    gsessionId: 'gsession-id',
+  });
+
+  try {
+    await assert.rejects(() => manager.start(), /Auth token required/);
+    await assert.rejects(() => manager.start(), /Auth token required/);
+  } finally {
+    manager.stop();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('locale resolution preserves config, env, system, and default precedence', () => {
   assert.deepEqual(resolveTransportLocaleSettings({
     requestedLocale: 'ja_JP.UTF-8',
@@ -121,6 +139,37 @@ test('locale resolution preserves config, env, system, and default precedence', 
     effectiveLocale: 'en-US',
     localeSource: 'default',
     hl: 'en',
+    acceptLanguage: 'en-US,en;q=0.9',
+  });
+});
+
+test('RPCClient locale evidence reflects final transport overrides', () => {
+  const client = new RPCClient({
+    authToken: 'token',
+    cookies: 'cookie=value',
+    locale: 'en-US',
+    headers: { 'Accept-Language': 'fr-CA,fr;q=0.9' },
+    urlParams: { hl: 'ja' },
+  });
+
+  assert.deepEqual(client.getTransportLocaleSettings(), {
+    effectiveLocale: 'fr-CA',
+    localeSource: 'config',
+    hl: 'ja',
+    acceptLanguage: 'fr-CA,fr;q=0.9',
+  });
+
+  const hlOnlyClient = new RPCClient({
+    authToken: 'token',
+    cookies: 'cookie=value',
+    locale: 'en-US',
+    urlParams: { hl: 'de' },
+  });
+
+  assert.deepEqual(hlOnlyClient.getTransportLocaleSettings(), {
+    effectiveLocale: 'de',
+    localeSource: 'config',
+    hl: 'de',
     acceptLanguage: 'en-US,en;q=0.9',
   });
 });
@@ -283,6 +332,18 @@ test('SourcesService.searchWebAndWait default timeout follows the 60s web sub-se
   }
 
   assert.equal(calls.filter(call => call.method === RPC.RPC_GET_SEARCH_RESULTS).length, 2);
+});
+
+test('SourcesService.addDiscovered uses shared source ID extraction behavior', async () => {
+  const sourceId = '12345678-1234-1234-1234-123456789abc';
+  const sources = new SourcesService({
+    call: async () => JSON.stringify([[sourceId, [sourceId], { other: sourceId }]]),
+  } as any);
+
+  assert.deepEqual(await sources.addDiscovered('notebook', {
+    sessionId: 'session-id',
+    webSources: [{ url: 'https://example.com/result', title: 'Result' }],
+  }), [sourceId]);
 });
 
 test('chunked decoders parse simple ASCII wrb.fr frames', () => {
