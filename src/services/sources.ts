@@ -1817,39 +1817,13 @@ export class SourcesService {
    */
   async addFromURL(notebookId: string, options: AddSourceFromURLOptions): Promise<string> {
     const { url } = options;
-    
-    // Check quota before adding source
-    this.quota?.checkQuota('addSource', notebookId);
-    
+
     // Check if it's a YouTube URL
     if (this.isYouTubeURL(url)) {
       return this.addYouTube(notebookId, { urlOrId: url });
     }
-    
-    // Regular URL
-    const response = await this.rpc.call(
-      RPC.RPC_ADD_SOURCES,
-      [
-        [
-          [
-            null,
-            null,
-            [url],
-          ],
-        ],
-        notebookId,
-      ],
-      notebookId
-    );
-    
-    const sourceId = this.extractSourceId(response);
-    
-    // Record usage after successful addition
-    if (sourceId) {
-      this.quota?.recordUsage('addSource', notebookId);
-    }
-    
-    return sourceId;
+
+    return this.add.url(notebookId, options);
   }
   
   /**
@@ -2265,60 +2239,7 @@ export class SourcesService {
    * ```
    */
   async searchWebAndWait(notebookId: string, options: SearchWebAndWaitOptions): Promise<WebSearchResult> {
-    const {
-      timeout = 30000,
-      pollInterval = 2000,
-      onProgress,
-      ...searchOptions
-    } = options;
-    
-    // Step 1: Initiate search
-    const sessionId = await this.searchWeb(notebookId, searchOptions);
-    
-    if (!sessionId) {
-      throw new NotebookLMError('Failed to initiate search - no sessionId returned');
-    }
-    
-    // Step 2: Poll for results
-    const startTime = Date.now();
-    let results: { web: DiscoveredWebSource[]; drive: DiscoveredDriveSource[] } = { web: [], drive: [] };
-    let lastResultCount = 0;
-    let stableCount = 0; // Count consecutive polls with same result count
-    
-    while (Date.now() - startTime < timeout) {
-      results = await this.getSearchResults(notebookId, sessionId);
-      
-      const hasResults = results.web.length > 0 || results.drive.length > 0;
-      const resultCount = results.web.length + results.drive.length;
-      
-      if (onProgress) {
-        onProgress({ hasResults, resultCount });
-      }
-      
-      // If we have results, check if they're stable (same count for 2 consecutive polls)
-      // This indicates search is complete
-      if (hasResults) {
-        if (resultCount === lastResultCount && resultCount > 0) {
-          stableCount++;
-          // If results are stable for 2 polls, consider search complete
-          if (stableCount >= 2) {
-            return { sessionId, ...results };
-          }
-        } else {
-          stableCount = 0; // Reset if count changed
-        }
-        lastResultCount = resultCount;
-      } else {
-        stableCount = 0;
-        lastResultCount = 0;
-      }
-      
-      // Wait before next poll
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
-    }
-    
-    // Timeout reached - return whatever we have (even if empty)
-    return { sessionId, ...results };
+    return this.add.web.searchAndWait(notebookId, options);
   }
   
   /**

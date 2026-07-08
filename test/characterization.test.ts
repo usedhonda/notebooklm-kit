@@ -26,6 +26,7 @@ import { createChunkedParser } from '../src/utils/chunked-parser.ts';
 import { QuotaManager, validateFileSize, validateTextSource } from '../src/utils/quota.ts';
 import { resolveTransportLocaleSettings } from '../src/utils/locale.ts';
 import { StreamingClient } from '../src/utils/streaming-client.ts';
+import * as RPC from '../src/rpc/rpc-methods.ts';
 
 test('error helpers preserve success and error code behavior', () => {
   assert.equal(isErrorResponse({ data: 0 }), null);
@@ -179,6 +180,109 @@ test('sources helpers preserve source ID and YouTube detection behavior', async 
   assert.deepEqual(await addSources.batch('notebook', {
     sources: [{ type: 'url', url: 'https://example.com' }],
   }), [sourceId]);
+});
+
+test('SourcesService.addFromURL delegates regular URLs to AddSourcesService.url payload and title update', async () => {
+  const sourceId = '12345678-1234-1234-1234-123456789abc';
+  const calls: Array<{ method: string; args: any[]; notebookId?: string }> = [];
+  const sources = new SourcesService({
+    call: async (method: string, args: any[], notebookId?: string) => {
+      calls.push({ method, args, notebookId });
+      return method === RPC.RPC_ADD_SOURCES ? [sourceId] : null;
+    },
+  } as any);
+
+  const addedId = await sources.addFromURL('notebook', {
+    url: 'https://example.com/article',
+    title: 'Custom Title',
+  });
+
+  assert.equal(addedId, sourceId);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].method, RPC.RPC_ADD_SOURCES);
+  assert.equal(calls[0].notebookId, 'notebook');
+  assert.equal(calls[0].args[0][0].length, 11);
+  assert.deepEqual(calls[0].args[0][0], [
+    null,
+    null,
+    ['https://example.com/article'],
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    1,
+  ]);
+  assert.equal(calls[1].method, RPC.RPC_MUTATE_SOURCE);
+  assert.deepEqual(calls[1].args, [
+    null,
+    [sourceId],
+    [[['Custom Title']]],
+  ]);
+});
+
+test('SourcesService.searchWebAndWait uses WebSearchService wait semantics', async () => {
+  const calls: Array<{ method: string; args: any[]; notebookId?: string }> = [];
+  const sources = new SourcesService({
+    call: async (method: string, args: any[], notebookId?: string) => {
+      calls.push({ method, args, notebookId });
+      if (method === RPC.RPC_SEARCH_WEB_SOURCES) {
+        return ['session-id'];
+      }
+      return [[[
+        'session-id',
+        ['notebook', ['query', 1], 1, [['https://example.com/result', 'Result title', 'description', 1]]],
+      ]]];
+    },
+  } as any);
+
+  const progress: Array<{ hasResults: boolean; resultCount: number }> = [];
+  const result = await sources.searchWebAndWait('notebook', {
+    query: 'query',
+    pollInterval: 0,
+    onProgress: status => progress.push(status),
+  });
+
+  assert.equal(result.sessionId, 'session-id');
+  assert.deepEqual(result.web.map(source => source.url), ['https://example.com/result']);
+  assert.equal(calls.filter(call => call.method === RPC.RPC_SEARCH_WEB_SOURCES).length, 1);
+  assert.equal(calls.filter(call => call.method === RPC.RPC_GET_SEARCH_RESULTS).length, 2);
+  assert.deepEqual(progress, [
+    { hasResults: true, resultCount: 1 },
+    { hasResults: true, resultCount: 1 },
+  ]);
+});
+
+test('SourcesService.searchWebAndWait default timeout follows the 60s web sub-service default', async () => {
+  const calls: Array<{ method: string; args: any[]; notebookId?: string }> = [];
+  const sources = new SourcesService({
+    call: async (method: string, args: any[], notebookId?: string) => {
+      calls.push({ method, args, notebookId });
+      return method === RPC.RPC_SEARCH_WEB_SOURCES ? ['session-id'] : [[]];
+    },
+  } as any);
+  const originalNow = Date.now;
+  const originalSetTimeout = globalThis.setTimeout;
+  const nowValues = [0, 30001, 60002];
+  Date.now = () => nowValues.shift() ?? 60002;
+  globalThis.setTimeout = ((callback: (...args: any[]) => void) => {
+    callback();
+    return 0 as any;
+  }) as typeof setTimeout;
+
+  try {
+    await sources.searchWebAndWait('notebook', {
+      query: 'query',
+      pollInterval: 0,
+    });
+  } finally {
+    Date.now = originalNow;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+
+  assert.equal(calls.filter(call => call.method === RPC.RPC_GET_SEARCH_RESULTS).length, 2);
 });
 
 test('chunked decoders parse simple ASCII wrb.fr frames', () => {
