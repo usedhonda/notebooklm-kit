@@ -84,6 +84,7 @@ interface PlaywrightCookieParam {
 
 interface OpenClawNotebookLMCreds {
   cookies?: string;
+  cookieCount?: number;
   playwrightCookies?: PlaywrightCookieParam[];
   [key: string]: unknown;
 }
@@ -179,9 +180,48 @@ async function readOpenClawCreds(explicitPath?: string): Promise<{ path: string;
   }
 }
 
-function cookieStringFromCookies(cookies: Array<{ name: string; value: string }>): string {
-  return cookies
-    .map(cookie => `${cookie.name}=${cookie.value}`)
+function domainMatchesHost(domain: string | undefined, host: string): boolean {
+  if (!domain) {
+    return true;
+  }
+  const normalizedDomain = normalizeCookieDomain(domain).toLowerCase();
+  const normalizedHost = host.toLowerCase();
+  return normalizedHost === normalizedDomain || normalizedHost.endsWith(`.${normalizedDomain}`);
+}
+
+function cookiePriority(cookie: { domain?: string; path?: string; expires?: number }, host: string, index: number): number {
+  const domain = normalizeCookieDomain(cookie.domain || host).toLowerCase();
+  const normalizedHost = host.toLowerCase();
+  const domainScore = domain === normalizedHost ? 10000 : domain.length;
+  const pathScore = (cookie.path || '/').length;
+  const expiryScore = typeof cookie.expires === 'number' && cookie.expires > 0 ? Math.min(cookie.expires, 9999999999) / 10000000000 : 0;
+  return domainScore + pathScore / 1000 + expiryScore / 10000 + index / 100000000;
+}
+
+export function cookieStringFromCookies(
+  cookies: Array<{ name: string; value: string; domain?: string; path?: string; expires?: number }>,
+  targetUrl: string = DEFAULT_NOTEBOOKLM_LOGIN_URL
+): string {
+  const targetHost = new URL(targetUrl).hostname;
+  const selected = new Map<string, { cookie: { name: string; value: string; domain?: string; path?: string; expires?: number }; priority: number }>();
+
+  cookies.forEach((cookie, index) => {
+    if (!cookie.name || cookie.name.includes('\uFFFD') || cookie.value.includes('\uFFFD')) {
+      return;
+    }
+    if (!domainMatchesHost(cookie.domain, targetHost)) {
+      return;
+    }
+
+    const priority = cookiePriority(cookie, targetHost, index);
+    const current = selected.get(cookie.name);
+    if (!current || priority > current.priority) {
+      selected.set(cookie.name, { cookie, priority });
+    }
+  });
+
+  return [...selected.values()]
+    .map(({ cookie }) => `${cookie.name}=${cookie.value}`)
     .join('; ');
 }
 
@@ -327,6 +367,7 @@ async function writeCookiesToOpenClawSecrets(
   const updatedData: OpenClawNotebookLMCreds = {
     ...currentData,
     cookies,
+    cookieCount: cookies.split(';').map(pair => pair.trim()).filter(Boolean).length,
     playwrightCookies,
     updatedAt: new Date().toISOString(),
   };

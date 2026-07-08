@@ -3,7 +3,10 @@ import test from 'node:test';
 
 import { chromium } from 'playwright';
 
-import { parseSavedCookieStringForAddCookies } from '../examples/utils.ts';
+import {
+  cookieStringFromCookies,
+  parseSavedCookieStringForAddCookies,
+} from '../examples/utils.ts';
 
 test('saved NotebookLM cookie strings normalize to Playwright addCookies-compatible cookies', async () => {
   const cookies = parseSavedCookieStringForAddCookies(
@@ -38,4 +41,30 @@ test('saved NotebookLM cookie strings normalize to Playwright addCookies-compati
   } finally {
     await browser.close();
   }
+});
+
+test('NotebookLM cookie header export keeps one cookie per name using the most specific matching domain', () => {
+  const cookieString = cookieStringFromCookies([
+    { name: 'OSID', value: 'drive', domain: 'drive.google.com', path: '/' },
+    { name: 'OSID', value: 'global', domain: 'google.com', path: '/' },
+    { name: 'OSID', value: 'notebook', domain: 'notebooklm.google.com', path: '/' },
+    { name: 'SID', value: 'jp', domain: 'google.co.jp', path: '/' },
+    { name: 'SID', value: 'global', domain: '.google.com', path: '/' },
+    { name: '__Host-GAPS', value: 'accounts', domain: 'accounts.google.com', path: '/' },
+    { name: '__Host-GAPS', value: 'notebook', domain: 'notebooklm.google.com', path: '/' },
+    { name: 'eq', value: 'a=b', domain: 'google.com', path: '/' },
+  ]);
+
+  const pairs = cookieString.split(';').map(pair => pair.trim()).filter(Boolean);
+  const names = pairs.map(pair => pair.slice(0, pair.indexOf('=')));
+
+  assert.deepEqual(names, ['OSID', 'SID', '__Host-GAPS', 'eq']);
+  assert.equal(new Set(names).size, names.length);
+  assert.ok(cookieString.includes('OSID=notebook'));
+  assert.ok(cookieString.includes('SID=global'));
+  assert.ok(cookieString.includes('__Host-GAPS=notebook'));
+  assert.ok(cookieString.includes('eq=a=b'));
+  assert.equal(cookieString.includes('drive'), false);
+  assert.equal(cookieString.includes('accounts'), false);
+  assert.equal(cookieString.includes('jp'), false);
 });
